@@ -153,22 +153,61 @@ def main() -> int:
             "collapsed": False,
             "panels": [],
         },
-        stat_panel(
-            301,
-            "Отклики сегодня (все резюме)",
-            "SELECT COALESCE(SUM(applied_today),0)::int AS value FROM ui_resume_stats",
-            y0 + 1,
-            w=4,
-            x=0,
-        ),
-        stat_panel(
-            302,
-            "Цель × резюме (10)",
-            "SELECT (COUNT(*) FILTER (WHERE resume_label IN ('TPM','PM','PHP')) * 10)::int AS value FROM ui_resume_stats",
-            y0 + 1,
-            w=4,
-            x=4,
-        ),
+        # Одна плитка: «0/30» и дата под ней (value_and_name).
+        {
+            "id": 301,
+            "type": "stat",
+            "title": "Отклики сегодня",
+            "gridPos": {"h": 4, "w": 8, "x": 0, "y": y0 + 1},
+            "datasource": DS,
+            "targets": [
+                target(
+                    """
+SELECT
+  (COALESCE(SUM(applied_today), 0)::text
+    || '/'
+    || (COUNT(*) FILTER (WHERE resume_label IN ('TPM','PM','PHP')) * 10)::text)
+    AS \"отклики\",
+  to_char((now() AT TIME ZONE 'Europe/Moscow')::date, 'DD.MM.YYYY') AS \"дата\"
+FROM ui_resume_stats
+""".strip(),
+                    format_as="table",
+                )
+            ],
+            "options": {
+                "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
+                "orientation": "vertical",
+                "textMode": "value",
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "center",
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {"mode": "thresholds"},
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [{"color": "blue", "value": None}],
+                    },
+                    "custom": {},
+                },
+                "overrides": [
+                    {
+                        "matcher": {"id": "byName", "options": "отклики"},
+                        "properties": [
+                            {"id": "displayName", "value": " "},
+                            {"id": "custom.width", "value": 0},
+                        ],
+                    },
+                    {
+                        "matcher": {"id": "byName", "options": "дата"},
+                        "properties": [
+                            {"id": "color", "value": {"fixedColor": "text", "mode": "fixed"}},
+                        ],
+                    },
+                ],
+            },
+        },
         # Не суммируем serp_cards за неделю — на каждом тике одни и те же карточки.
         stat_panel(
             303,
@@ -215,9 +254,7 @@ WHERE lower(a.verdict) = 'skip'
             307,
             "Что считают плитки выше",
             """
-**Отклики сегодня** — реальные нажатия «Откликнуться» / Playwright apply из `applied_by_vacancy` за календарный день МСК (не вердикт DevAI APPLY).
-
-**Цель × резюме (10)** — `число живых резюме TPM/PM/PHP × 10` (норма откликов в день).
+**Отклики сегодня** — одна плитка `факт/цель`: реальные apply за день МСК / (`TPM+PM+PHP` × 10). Дата — календарный день МСК.
 
 **Прогонов suitable** — сколько раз за 7 дней отработал `hh.php vacancies` / schedule по каждому резюме (строки в `ui_suitable_run_stats`).
 
