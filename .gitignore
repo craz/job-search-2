@@ -9,3 +9,5 @@
 /public/ui.js
 /public/busy.js
 /var/
+**/__pycache__/
+*.py[cod]
