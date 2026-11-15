@@ -175,14 +175,14 @@ FROM ui_resume_stats
                 )
             ],
             "options": {
+                # limit=1 резал второе поле (дату). values=true — строки без lastNotNull.
                 "reduceOptions": {
                     "calcs": [],
                     "fields": "/.*/",
                     "values": True,
-                    "limit": 1,
                 },
                 "orientation": "vertical",
-                "textMode": "value",
+                "textMode": "value_and_name",
                 "colorMode": "none",
                 "graphMode": "none",
                 "justifyMode": "center",
