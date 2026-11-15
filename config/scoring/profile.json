@@ -1,0 +1,20 @@
+{
+  "_comment": "Локальный профиль hard exclusions для job_search_2 DevAI scoring. Править здесь.",
+  "schema_version": 1,
+  "profile_id": "job-search-2",
+  "profile_version": 1,
+  "role_preferences": {
+    "hard_skip_dedicated_crm_analyst": true,
+    "hard_skip_infrastructure_primary": true,
+    "hard_skip_sales_commercial_primary": true,
+    "hard_skip_sales_managers_leadership": true,
+    "hard_skip_leadgen_partnerships_primary": true
+  },
+  "fit_hard_exclusions": [
+    "commercial_primary",
+    "crm_manager_profession",
+    "one_c_engineering_leadership",
+    "non_it_product_primary"
+  ],
+  "prompt_version": "job-search-2-devai-v3-non-it-product"
+}

@@ -1,0 +1,11 @@
+.env
+/vendor/
+/node_modules/
+/*.log
+/data/
+/data/**
+!/data/.gitkeep
+/public/build/hot
+/public/ui.js
+/public/busy.js
+/var/

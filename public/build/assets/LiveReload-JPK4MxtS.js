@@ -1,0 +1,1 @@
+class n{version="";boot(o=1e3){window.setInterval(()=>{this.poll()},o),this.poll()}async poll(){try{const o=await fetch(`/build/reload.json?_=${Date.now()}`,{cache:"no-store"});if(!o.ok)return;const i=await o.json(),t=String(i.v??"");if(t==="")return;if(this.version===""){this.version=t;return}t!==this.version&&window.location.reload()}catch{}}}export{n as L};

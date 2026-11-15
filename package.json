@@ -1,0 +1,28 @@
+{
+  "name": "job-search-2",
+  "private": true,
+  "type": "module",
+  "description": "NPM scripts as Cursor/VS Code entrypoints for PHP CLI",
+  "scripts": {
+    "hh": "php bin/hh.php",
+    "hh:me": "php bin/hh.php me",
+    "hh:browser:login": "php bin/hh.php login",
+    "hh:browser:city": "php bin/hh.php city",
+    "hh:browser:set-city": "php bin/hh.php set-city",
+    "hh:browser:set-moscow": "php bin/hh.php set-city Москва",
+    "hh:resumes": "php bin/hh.php resumes",
+    "hh:cache:vacancies": "php bin/hh.php vacancies",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "vite build",
+    "ui:php": "php -S 127.0.0.1:8888 -t public",
+    "ui:watch": "vite build --watch",
+    "ui:hmr": "concurrently -k -n php,vite -c blue,green \"npm run ui:php\" \"vite\"",
+    "ui": "concurrently -k -n php,watch -c blue,green \"npm run ui:php\" \"npm run ui:watch\""
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12"
+  }
+}

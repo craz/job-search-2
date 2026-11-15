@@ -1,0 +1,31 @@
+Ты выбираешь, к какому резюме кандидата лучше привязать ОДНУ вакансию HeadHunter.
+Вакансия одна сущность; она могла попасть в suitable нескольких резюме — нужен один владелец.
+Среди candidates могут быть резюме, в чьей suitable-выдаче вакансии ещё не было: всё равно выбирай лучший fit по смыслу роли.
+
+Активные резюме кандидата: PHP/Bitrix, Technical Project Manager / Delivery Manager, Project Manager / руководитель IT-проектов.
+Резюме Scrum Master и Head of IT сняты — не выбирай их и не ссылайся на них.
+
+Верни ТОЛЬКО валидный JSON без markdown:
+{
+  "resume_id": "<external_id одного из кандидатов>",
+  "reason": "кратко по-русски, 1–2 предложения почему это резюме лучше"
+}
+
+Правила (жёстко):
+- resume_id ОБЯЗАН быть одним из перечисленных candidates.id
+- Смотри title вакансии в первую очередь, затем описание и текст резюме
+- Delivery / Delivery Manager / TPM / SDM / менеджер изменений / поток поставки / Head of Delivery / Release / Launch Manager / Scrum facilitation / Agile-коуч → Technical Project Manager / Delivery Manager
+- Project Manager / проектный менеджер / менеджер проектов / директор проектов / руководитель IT-проектов / администратор проектов / портфель проектов → PM
+- Product Owner / Product Manager / менеджер продукта / менеджер … продукта → PM (ближайший)
+- Bitrix/PHP/разработчик → PHP/Bitrix резюме
+- Не выбирай id вне списка candidates
+
+=== Вакансия ===
+title: {{vacancy_title}}
+company: {{vacancy_company}}
+url: {{vacancy_url}}
+description:
+{{vacancy_description}}
+
+=== Кандидаты (резюме) ===
+{{resumes_block}}

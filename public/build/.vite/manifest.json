@@ -1,0 +1,71 @@
+{
+  "_FlashBanner-b-949ana.js": {
+    "file": "assets/FlashBanner-b-949ana.js",
+    "name": "FlashBanner"
+  },
+  "_LiveReload-JPK4MxtS.js": {
+    "file": "assets/LiveReload-JPK4MxtS.js",
+    "name": "LiveReload"
+  },
+  "_ScheduleStatusPoll-Dh21sZsg.js": {
+    "file": "assets/ScheduleStatusPoll-Dh21sZsg.js",
+    "name": "ScheduleStatusPoll"
+  },
+  "assets/ts/busy.ts": {
+    "file": "assets/busy-MTKx_uZ2.js",
+    "name": "busy",
+    "src": "assets/ts/busy.ts",
+    "isEntry": true
+  },
+  "assets/ts/chats.ts": {
+    "file": "assets/chats-CiH3nO6i.js",
+    "name": "chats",
+    "src": "assets/ts/chats.ts",
+    "isEntry": true,
+    "imports": [
+      "_LiveReload-JPK4MxtS.js",
+      "_ScheduleStatusPoll-Dh21sZsg.js"
+    ]
+  },
+  "assets/ts/companies.ts": {
+    "file": "assets/companies-CKLcOXBh.js",
+    "name": "companies",
+    "src": "assets/ts/companies.ts",
+    "isEntry": true,
+    "imports": [
+      "_LiveReload-JPK4MxtS.js"
+    ]
+  },
+  "assets/ts/errors.ts": {
+    "file": "assets/errors-NI44gTUa.js",
+    "name": "errors",
+    "src": "assets/ts/errors.ts",
+    "isEntry": true,
+    "imports": [
+      "_FlashBanner-b-949ana.js",
+      "_LiveReload-JPK4MxtS.js"
+    ]
+  },
+  "assets/ts/ui.ts": {
+    "file": "assets/ui-CMWZ-Q8-.js",
+    "name": "ui",
+    "src": "assets/ts/ui.ts",
+    "isEntry": true,
+    "imports": [
+      "_LiveReload-JPK4MxtS.js",
+      "_FlashBanner-b-949ana.js",
+      "_ScheduleStatusPoll-Dh21sZsg.js"
+    ]
+  },
+  "assets/ts/vacancies.ts": {
+    "file": "assets/vacancies-DoNdqbiP.js",
+    "name": "vacancies",
+    "src": "assets/ts/vacancies.ts",
+    "isEntry": true,
+    "imports": [
+      "_FlashBanner-b-949ana.js",
+      "_LiveReload-JPK4MxtS.js",
+      "_ScheduleStatusPoll-Dh21sZsg.js"
+    ]
+  }
+}

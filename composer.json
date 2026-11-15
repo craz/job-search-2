@@ -1,0 +1,15 @@
+{
+  "name": "craz/job-search-2",
+  "description": "Job search (PHP)",
+  "type": "project",
+  "require": {
+    "php": ">=8.5",
+    "playwright-php/playwright": "^1.5",
+    "2captcha/2captcha": "^1.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "JobSearch\\": "src/"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "intelephense.environment.phpVersion": "8.5.0",
+  "php.validate.executablePath": "/usr/bin/php8.5",
+  "intelephense.files.exclude": [
+    "**/.git/**",
+    "**/.svn/**",
+    "**/.hg/**",
+    "**/CVS/**",
+    "**/.DS_Store/**",
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**/{{.git,.svn,.hg,CVS,.DS_Store,node_modules,bower_components}}/**",
+    "**/vendor/playwright-php/**/node_modules/**",
+    "**/.history/**",
+    "**/data/cache/**"
+  ],
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/vendor/playwright-php/**/node_modules/**": true,
+    "**/data/cache/**": true
+  }
+}

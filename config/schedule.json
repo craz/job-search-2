@@ -1,0 +1,25 @@
+{
+  "tasks": [
+    {
+      "id": "chats",
+      "command": "chats",
+      "every_seconds": 600,
+      "enabled": true,
+      "label": "Скачать чаты с HH"
+    },
+    {
+      "id": "resume_views",
+      "command": "resume-views",
+      "every_seconds": 600,
+      "enabled": true,
+      "label": "Просмотры резюме HH"
+    },
+    {
+      "id": "vacancies",
+      "command": "vacancies",
+      "every_seconds": 1800,
+      "enabled": true,
+      "label": "До 10 apply/maybe вакансий на каждое резюме"
+    }
+  ]
+}

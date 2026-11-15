@@ -1,0 +1,341 @@
+---
+description: Общие правила разработки job_search_2 (Clean Code, ООП, SOLID, KISS, MVC + Onion, комментарии)
+alwaysApply: true
+---
+
+# Правила проекта job_search_2
+
+Единый файл правил. Новые договорённости добавляем сюда, а не плодим узкие `.mdc` без нужды.
+
+## Цель продукта
+
+**10 откликов на каждое резюме в день** — только на вакансии, которые DevAI / scoring оценил как норм (не `skip`).
+
+Поток: скачать новые suitable и **сразу** оценивать (не стоп по уже набранным apply/maybe) → откликнуться на OK → норма 10 откликов/резюме/день.
+«Оценить» — догон; после `vacancies` оценка не ждёт клика. Не раздувать фичи мимо нормы.
+Прогресс на главной: сегодня N/10 на резюме + пачка (skip / рассматриваем / без оценки); полоска DevAI у каждого резюме.
+Страница вакансий: `/?page=vacancies&resume=` — по умолчанию скачанные за 3 дня (все suitable-run), переключатель резюме, `scope=all` / «Ещё» — с `HISTORY_SINCE` = 28.10.2026 (как owner-cutoff; в Core не удаляем); фильтр consider/sent/errors/tg_skip/skip/pending/viewed/rejected/duplicates; розовый/зелёный по вердикту. «Смотрим» — только ещё не откликнутые и без ошибки apply / скипа TG; успешный отклик → «Отправлено», сбой → «Ошибки», skip анкеты/письма в TG → «Скип TG» (`markSkipped`, не открытая ошибка). Одна HH-вакансия — один owner-резюме (DevAI при пересечении suitable); скачана peer’ом, owner здесь — в «Смотрим» owner’а за 3 дня по `discovered_at` suitable (`mergeOwnedVacancies`), не по `decided_at` assign; дубли — вкладка «Дубли»; компании с отказом в чатах — вкладка «Отказы», не в «Смотрим». Use case: `VacancyPage` (оркестратор) + `VacancyPageFilter` / `VacancyPageCollection` / `VacancyPageRows`.
+«Откликнуться» = Playwright job `busy=apply` / `hh.php apply` (не ссылка на hh.ru); на фильтре **Смотрим (N)** — «Откликнуться на 15» (пачка) / «все N» → `busy=apply_consider&limit=` / `hh.php apply-consider … [limit]`. «Открыть на hh.ru» — отдельная ссылка. В Core applications не пишем. Обязательное сопроводительное → DevAI (`config/cover_letter/`, `cover_v12`) → `CONFIRMED`/`CONFIRMED_GAP`/`PARTIAL`/`MISSING`; пробелы `DRAFT_WITH_GAPS`/`NEEDS_INPUT` → TG дозапрос (не «текст вакансии»; `CONFIRMED_GAP` не переспрашивать) → Core `cover_letters` → TG ok/правка/skip (`HH_LETTER_TG`) → fill (`CoverLetterFiller`; слабый DOM → Core lookup). Анкета работодателя (`/applicant/vacancy_response`) → `ScreeningFormFiller` (common + learned + TG `HH_SCREENING_TG`), fail-closed без выдуманных ответов. Капча при отклике → crop img → 2captcha/rucaptcha ImageToText (`TWOCAPTCHA_API_KEY` / `ServiceCaptchaSolver`) → ввод; fail → TG DM (`TELEGRAM_DM_*`, `HH_CAPTCHA_TG` / `TelegramCaptchaSolver`).
+Чаты HH: ссылка «Чат» справа в шапке → `/?page=chats` (live ∪ архив `chat_history`); синк `busy=chats` / `hh.php chats` → Core `hh_chats`; авто — `hh.php schedule` + `config/schedule.json` (`chats` / `resume_views` каждые 10 мин; `vacancies` каждые 30 мин — новые suitable ≤7 дней до maxIngest, DevAI сразу; стоп не по уже набранным apply/maybe); **Покинуть все отказы** → `busy=leave_rejections`; **Покинуть старше месяца** → `busy=leave_old` / `hh.php leave-old` → архив **до** leave + chatik `POST /leave` + пересинк (`LeaveOldChats` / `LeaveRejectionChats`).
+Отказы: `/?page=rejections` — журнал DISCARD = live ∪ `ChatRejectionArchive`; leave — на странице чатов. Компании/бейджи читают архив отказов (leave не обнуляет пометки).
+Ошибки: ссылка «Ошибки» в шапке → `/?page=errors` (фильтры open/unavailable/skipped/resolved); сбои `apply` / `apply_consider` → FileCache `app_errors` (`AppErrorStore`); skip формы в TG → `markSkipped` / фильтр **Скип**, не DevAI-skip.
+Статистика: шапка / `/?page=statistics` → Grafana [`job-search-2`](http://127.0.0.1:3000/d/job-search-2/poisk-raboty) row «Статистика» (`GRAFANA_STATS_URL`). Данные: sync `scripts/grafana/sync_live_jobs.py` → `ui_suitable_run_stats` / `ui_applied_events` / `ui_vacancy_owner` / `ui_resume_stats` + Core `assessments` / `daily_metrics`. Owner в продукте: `vacancy_resume_owner` (cutoff ≥28.10.2026); peers только актуальные резюме; споры — title-rules (`VacancyOwnerTitleRules`: TPM/PM/PHP) иначе DevAI; CLI `hh.php assign-reconcile` / `assign-reconcile rebuild`.
+Компании: ссылка в шапке → `/?page=companies` — все работодатели из suitable-вакансий + пометка отказов из чатов (`ListCompanies`).
+Исключения: `/?page=exclusions` — компании, куда не подаёмся (`CompanyExclusionStore`); сид Сберов из справочника; матч в «Смотрим»/отклик — список **или** `looksLikeSber` (имя с «Сбербанк»/«Сбер…», не только точное совпадение сида); не в «Смотрим».
+Дневной снимок пишется в Core Postgres `daily_metrics` (`PUT /api/v1/metrics/{date}`), не только в PHP.
+
+## Данные: чистота при смене набора резюме
+
+**Данные и конфиг должны оставаться согласованы с актуальным списком резюме HH.** Не допускать повторения ситуации «в UI 3 резюме, а в owner/peers/промптах/хардкоде ещё живут удалённые SM/HIT».
+
+Канон:
+- Источник правды по «какие резюме живы» — кеш `resumes` с HH (то, что в UI / `FetchSuitable`).
+- `suitable_peers` / `candidates` / `resume_id` в `vacancy_resume_owner` — **только id из этого списка**. Peers из старых Core `resume_suitable` runs фильтровать (`filterToKnownResumes`); удалённые id не писать и не учитывать в дедупе UI.
+- После удаления/добавления резюме на HH в **том же изменении/сессии**: обновить ярлыки (`ListPage::RESUME_LABELS`), title-rules (`VacancyOwnerTitleRules`), промпт `config/scoring/prompts/assign_vacancy_resume.txt`, правила/`docs` где перечислены роли; прогнать `php bin/hh.php assign-reconcile rebuild`.
+- Не оставлять «на всякий случай» мёртвые resume_id в коде, промптах и FileCache. Исторические отчёты (`docs/analysis/…`) можно не переписывать — это архив, не рабочий индекс.
+- Новый код assign/дедупа не должен опираться на полный peers из Core без пересечения с актуальными резюме.
+
+## HH: не опираться на официальный API
+
+**`api.hh.ru` (OAuth / OpenAPI) — deprecated для наших сценариев.** Не рассчитывать на него для новых фич и не искать там «как сделать правильно» (hide/delete negotiations, чаты, отклики и т.п.): спецификация дырявая/неполная, много эндпоинтов 403 или недоступны applicant-приложениям.
+
+Канон доступа к HH в этом репо:
+- **Playwright + browser-сессия** (`storageState`) → applicant UI / chatik (`ApplicantPages`);
+- то, что уже работает через OAuth (`GET /me` и узкий legacy), не раздувать.
+
+Новое действие на HH (leave чата, apply, список чатов, город…) — сначала UI/chatik в браузере, не OpenAPI.
+
+## Правила отбора (канон этого репо)
+
+Источник правды: [`docs/scoring-policy.md`](../../docs/scoring-policy.md), `config/scoring/profile.json`, промпт `config/scoring/prompts/score_vacancy.txt`. Оценка идёт из PHP → DevAI ([docs/scoring-devai.md](../../docs/scoring-devai.md)), без Python scoring `job_search_ref`.
+
+Берём то, что HH даёт под резюме (TPM / PM / PHP). SM и Head of IT сняты. Своего фильтра по словам в названии не нужно.
+
+### Жёсткий SKIP (не откликаться)
+
+| Правило | Когда режет |
+|--|--|
+| `FIT.1c_engineering_required` | Руководство разработкой/внедрением **1С** (не интеграция Bitrix↔1С со стороны CRM) |
+| `FIT.crm_manager` | Профессия CRM-manager / ведение базы, не PM |
+| `FIT.commercial_primary` | Sales / BDM / account / «развитие бизнеса» как основная суть |
+| `DESIRABILITY.sales_managers_leadership.skip` | Обязательное управление **РОПами** / руководителями продаж |
+| `DESIRABILITY.leadgen_partnerships_primary.skip` | Обязательная самостоятельная лидоген / коммерческое развитие партнёрской сети |
+| `DESIRABILITY.dedicated_crm_analyst.skip` | Выделенный CRM-аналитик |
+| `DESIRABILITY.infrastructure_primary.skip` | Инфра/ops/админ IT как основная суть |
+| `FIT.non_it_product_primary` | PM / «разработка» **физического / не-IT продукта** (аэроигрили, МБТ, мебель…) — не software/digital delivery |
+| International relocation | Работа/релокация за рубеж |
+
+Также SKIP по смыслу: CIO/CTO/CMO, team lead разработки, SA/BA как основная роль, PO/Product без delivery, маркетинг, support-only, junior «начни карьеру PM».
+
+**Не резать** только за: работу с существующими B2B-клиентами; подрядчиков; управление CRM/процессами; sales/лидоген как контекст проекта; IT/IoT/ERP в «железной» компании. Неоднозначное → review, не авто-SKIP.
+
+### Можно в шортлист / отклик
+
+Delivery / TPM / PM IT / Scrum (delivery) / release при IT/product/web delivery; интеграции CRM/ERP (Bitrix24 ↔ 1С как интеграция); B2B, e-com/web/mobile delivery.
+
+Пороги ЗП из `personal_scoring_profile.example.json` **не копировать** — заглушка.
+
+## Даты у данных и событий
+
+Любые **данные** имеют момент возникновения; любые **события** — момент, когда случились. В UI и пользовательских текстах даты **показываем**, если поле есть в источнике (не выдумывать).
+
+- Формат даты-времени: **`dd.mm.YYYY HH:mm:ss`** (русская нотация, ведущие нули), таймзона **Europe/Moscow**. Пример: `09.11.2026 15:04:16`.
+- Календарный день (дневные метрики без времени): **`dd.mm.YYYY`**.
+- Единый форматтер: `Presentation\View\RuDate` (`dateTime` / `day`). Не размазывать `DateTime::format` по View.
+- Хранение/API могут оставаться ISO/UTC; **отображение** — всегда через `RuDate`.
+- Новые сущности/события: тащить `*_at` / `created_at` в payload списка/карточки и рисовать в UI рядом с сутью (скачана / оценена / отклик / …).
+
+## Общий подход
+
+- Пишем **атомарно**: маленький понятный шаг → проверка → следующий шаг.
+- Не раздувать код и архитектуру «на будущее» без явной просьбы.
+- Правки только по запросу; не рефакторить заодно соседнее.
+- Меняешь слои / wiring / публичный поток — **сразу** canvas + этот `.mdc` + `docs/` (см. «Синхронизация артефактов»).
+
+## Clean Code
+
+Опираемся на идеи *Clean Code* (Р. Мартин) и принятую практику **современного PHP** (PSR-4, Symfony/Laravel-стиль), не на C#/Java-венгерскую нотацию.
+
+### Имена
+
+- Имя говорит о **роли в домене**, не о типе конструкции: `HhApi`, `HttpClient`, `Config`.
+- **Без префикса `I`** у интерфейсов (`IHhApi` — плохо). Префикс `I` — привычка из **C# / старого .NET**; в Clean Code и PHP-сообществе тип в имя не кодируют (это видно из `interface` / type-hint).
+- Избегать бессмысленных `Manager`, `Helper`, `Util`, `Data`, `Info` без уточнения.
+- Методы — глаголы/действия (`currentUser`, `me`, `render`); классы — существительные/способности.
+
+### Интерфейсы: где хранить
+
+- **Не** складывать все интерфейсы в одну свалку `Interfaces/` «потому что интерфейсы».
+- Контракты домена — в `Domain/<area>/` рядом с сущностями (`HhApi`, `CoreApi`, `ApplicantPages`, `BrowserGateway`).
+- Контракты инфраструктуры — в своём пакете рядом с реализацией (`Infrastructure/Http/HttpClient`, `Infrastructure/Config/Config`, `Infrastructure/Cache/Cache`).
+- Presentation-контракт View — в `Presentation/View/View.php`.
+- Откуда правило: Clean Code + Onion (зависимости внутрь) + PSR-4, не «вынести все interface в одну директорию».
+
+### Прочее из Clean Code
+
+- Функции/методы короткие, делают одно; аргументов мало.
+- Не оставлять мёртвый код и закомментированные куски «на всякий случай».
+- Ошибки не глотать молча; явные исключения / коды выхода на краю.
+- Комментарии — зачем, не что (см. ниже).
+
+### Размер PHP-файла и SRP
+
+- Цель: **≤ ~300 строк** на файл/класс; комфортный потолок **~400–500**. Выше — тяжело читать и править.
+- **Один класс / модуль — один файл** (PSR-4); одна причина менять файл (SRP).
+- **Триггер рефакторинга:** файл/класс естественно перевалил **~400 строк** → не дописывать огромные куски; предложить/сделать вынос в отдельные use case / сервис / value object / parser (без god-object).
+- Не класть в PHP гигантские статические массивы данных — данные в конфиг/кеш/БД; иначе раздувается парсинг и OPcache.
+- Новые PHP-файлы: `declare(strict_types=1);`, typed props/args/returns, DI через конструктор, без static/global state.
+
+## ООП
+
+- Логика — в классах (use cases, клиенты, value objects, исключения).
+- `bin/hh.php` — тонкий CLI entrypoint (`Presentation\Cli\HhCli`); команды параметром, не отдельными файлами.
+- Зависимости явно (конструктор / аргументы), без скрытого глобального состояния.
+- Процедурный glue допустим только в entrypoint (`.env`, wiring, `exit`).
+
+## SOLID
+
+- **S** — один класс / метод ≈ одна ответственность; не god-object.
+- **O** — расширять новым кодом/классами, не ломая существующие контракты без нужды.
+- **L** — подтипы взаимозаменяемы с базовым контрактом; не сюрпризить вызывающего.
+- **I** — узкие интерфейсы; не заставлять зависеть от лишних методов.
+- **D** — зависеть от абстракций/контрактов, а не от деталей (HTTP-клиент, файлы).
+
+## Programming to an Interface
+
+Программируем **через интерфейсы**, а не через конкретные реализации.
+
+- Публичные зависимости (конструктор / аргументы) типизировать интерфейсом: `HhApi`, `HttpClient`, `Config`.
+- Вызывающий код работает с контрактом (`$api->me()`), не зная про curl/файлы.
+- Конкретный класс создаём на краю (entrypoint / фабрика `fromEnv`), дальше передаём как интерфейс.
+- Интерфейс — только там, где есть граница замены (API, транспорт, конфиг). Не интерфейс на каждый DTO/`Me`.
+
+```php
+// ❌ BAD — жёсткая привязка к реализации
+function printMe(HhClient $client): void { /* ... */ }
+
+// ✅ GOOD — зависимость от контракта Domain
+function printMe(HhApi $api): void { /* ... */ }
+```
+
+## MVC + Onion
+
+MVC — внешний слой (запрос/ответ). Onion — направление зависимостей к ядру.
+
+```text
+src/
+  Presentation/     # Controllers, View, Cli  (MVC)
+  Application/      # Use cases (сценарии)
+  Domain/           # Entities + порты (HhApi, CoreApi, ApplicantPages, …)
+  Infrastructure/   # HhClient, ApplicantPages, Curl*, Cache, Config/Env
+```
+
+| Слой | Роль | Примеры |
+|--|--|--|
+| **Presentation** | HTTP/CLI + View; тонкий Controller → UseCase → View | `MeController`, `HtmlPageView`, `HhCli` |
+| **Application** | Один сценарий без HTML/curl | `GetCurrentUser`, `ListMine`, `FetchSuitable`, `ListPage` |
+| **Domain** | Сущности и контракты; ничего не знает про Playwright/HTML/.env | `Me`, `ResumeList`, `HhApi`, `CoreApi` |
+| **Infrastructure** | Реализации портов | `HhClient`, `ApplicantPages`, `CurlCoreClient`, `Env` |
+
+Правило зависимостей: **только внутрь** — Presentation → Application → Domain; Infrastructure → Domain. Domain не импортирует внешние слои.
+
+- Controller вызывает **UseCase**, не `HhClient` / `ApplicantPages` напрямую.
+- UseCase зависит от портов Domain; concrete собираем в entrypoint/`HhCli`.
+- View не ходит в HH и не читает `.env`.
+- Домен «отклики» = `JobApplication` (не путать со слоем `Application/`).
+- Без DI-контейнера и без пустых `Interfaces/` / `Repositories/` «на вырост».
+
+```php
+// ✅ Presentation → Application → Domain port
+$me = (new MeController(new GetCurrentUser($api)))->currentUser();
+$view->render($me->toArray());
+```
+
+## KISS / YAGNI
+
+- Самое простое решение, которое закрывает текущую задачу.
+- Не вводить DI-контейнер и лишние слои «на вырост».
+- Интерфейсы — по правилу выше, не «на всякий случай» для каждого класса.
+- Дублирование двух строк лучше, чем ранняя неверная абстракция.
+
+## Комментарии и читаемость
+
+Комментариев должно быть **достаточно**, чтобы с первого взгляда было ясно:
+
+- зачем существует **класс** (роль в системе);
+- что делает **публичный метод** и какие у него предусловия / важные эффекты;
+- неочевидные решения (прокси, формат HH API, коды выхода);
+- у **CLI entrypoint** (`bin/*.php`) — usage и список команд/параметров в файловом docblock (не только `exit(…->run($argv))` без подсказки).
+
+Писать **зачем**, не пересказывать очевидный код. Не комментировать каждую строку.
+
+```php
+/**
+ * Контракт официального API HeadHunter для нужд приложения.
+ */
+interface HhApi
+{
+    /** Текущий пользователь по OAuth: GET /me. */
+    public function me(): Me;
+}
+```
+
+Docblock на языке проекта (сейчас — русский или короткий английский; внутри одного файла — единообразно).
+
+## Именование и структура
+
+- См. **Clean Code** выше: без `I`-префикса; интерфейсы в Domain/Infrastructure рядом с областью, не в общей `Interfaces/`.
+- Имена отражают домен и слой (`HhApi`, `MeController`, `GetCurrentUser`, `JsonStdoutView`).
+- `src/` — PSR-4 `JobSearch\`: `Presentation\`, `Application\`, `Domain\`, `Infrastructure\`; секреты только в `.env`.
+
+## Frontend (TypeScript + Vite)
+
+- Исходники только в `assets/ts/**` — **TypeScript + OOP** (классы с одной ответственностью).
+- Сборка — **Vite** (`vite.config.ts`). Entrypoints: `ui`, `busy`.
+- Dev (прокси-браузер): `npm run ui` = `php -S 127.0.0.1:8888` + `vite build --watch`; JS только same-origin `/build` (без BrowserSync и без `:5173`).
+- Авто-reload: stamp `public/build/reload.json` + `LiveReload` в UI (поллинг, без WebSocket).
+- HMR (без системного прокси): `npm run ui:hmr` → + Vite `:5173` и `public/build/hot`.
+- Открывать **http://127.0.0.1:8888/** (не `localhost`, не `:8890`).
+- Prod: `npm run build` → `public/build` + manifest; руками бандлы не править.
+- Inline JS в PHP View запрещён; стили busy-экрана могут быть inline ради мгновенной отрисовки.
+
+## UI: проверка перед сдачей
+
+После правок HTML/CSS/`HtmlPageView` (и любого экрана) **обязательно** просмотреть страницу глазами или скриншотом и проверить:
+
+1. **Нет дублей** одного и того же CTA/кнопки/ссылки с одним действием в разных блоках (одна операция — один контрол).
+2. Нет повторяющихся подсказок про одно и то же (прокси, «подождите N с») в каждом карточке подряд.
+3. Пустые/незагруженные блоки ссылаются на **единственный** контрол («кнопка выше»), а не копируют его.
+4. Первый экран не выглядит «сломанным»: либо контент, либо явная загрузка — не пустой тёмный viewport без текста.
+5. На узкой ширине кнопки не размножаются визуально в две одинаковые колонки одного действия.
+6. Долгие операции (Playwright / refresh) **никогда** не блокируют навигацию «в пустоту»: сначала мгновенный экран «Загрузка…», работа в фоне (`fetch` + JSON), потом редирект на готовую страницу.
+7. Учитывать, что `php -S` **однопоточный**: Playwright **не** выполнять внутри HTTP-запроса UI. Долгие job — `php bin/hh.php refresh|vacancies|job-set-city|apply` в фоне + poll `job=status`. Экран ожидания — inline CSS/JS, явный прогресс (не «пустой тёмный экран»).
+
+Нарушение пунктов 1, 6 или 7 — стоп, правим до ответа пользователю.
+
+## Документация
+
+Пишем так, чтобы **быстро понять часть приложения**, а не «всё сразу в одном README».
+
+### Структура
+
+- Один **общий документ-оглавление** (hub): кратко «что это за проект» + **оглавление со ссылками** на тематические документы. Почти без деталей реализации.
+- Остальные документы — **по одной зоне** (слой / сценарий / подсистема): например UI+кеш, Playwright/browser-сессия, HH API, busy/jobs, frontend/Vite.
+- Класть в `docs/` (или рядом с зоной, если это узкая заметка). Hub: `docs/README.md` (или `docs/INDEX.md`).
+- В hub — только ссылки и 1–3 предложения на пункт; детали живут в целевом файле.
+- Не дублировать одно и то же в трёх местах: в тематическом doc — правда; в hub — указатель; в коде — краткий «зачем».
+
+### Объём (знаки ≈ символы с пробелами) — когнитивный лимит
+
+Ориентир: один документ = **одна мысль / одна зона**, читается за **2–5 минут** без «простыни».
+
+| Тип | Цель | Объём | Если больше |
+|--|--|--|--|
+| **Hub (оглавление)** | Навигация | **1 500–4 000** знаков | Убрать прозу, оставить ссылки |
+| **Тематический doc** | Понять одну часть приложения | **3 000–8 000** знаков (идеал **~5 000**) | Разбить на 2 файла + ссылки |
+| **Мягкий потолок** | Ещё читаемо | **≤ 12 000** знаков | Обязательно дробить |
+| **Микро-заметка** | Один tip / один поток | **500–1 500** знаков | Ок как есть |
+
+Практические правила:
+
+- Заголовок H1 = зона; дальше короткие секции (вход → поток → файлы → ошибки/коды выхода).
+- В начале тематического doc — **3–7 строк summary** («зачем / что делает / где код»).
+- Таблицы и списки предпочтительнее длинных абзацев.
+- Canvas / схемы не заменяют текстовый hub, но могут быть пунктом оглавления.
+- Не раздувать docs «на будущее»; но при смене публичного потока / слоёв / путей кода — **обновить в том же изменении** (см. чеклист ниже).
+
+Почему такие цифры: рабочая память держит мало чанков; документ > ~12 000 знаков уже не «быстро схватить», его начинают скроллить и пропускать. Лучше два файла по 5 000, чем один на 15 000.
+
+## Синхронизация артефактов (обязательно)
+
+При любом изменении, которое трогает **слои, namespaces, wiring, публичный поток или пути «где код»**, в **том же** ответе/PR обновить всё релевантное:
+
+1. **Canvas** — [`architecture.canvas.tsx`](/home/craz/.cursor/projects/data-Projects-job-search-2/canvases/architecture.canvas.tsx): узлы/рёбра/подписи нужных шагов + секция «Описание потока вызовов», если менялся порядок/коды выхода.
+2. **Правила** — этот файл (`.cursor/rules/project.mdc`): структура `src/`, примеры имён, список шагов canvas, entrypoint.
+3. **Документация** — `docs/` (hub + тематические: «Где код», потоки, имена классов). Не оставлять старые пути вроде `src/Hh`, `Controller/Hh*`.
+
+Не обновлять canvas/docs из‑за чисто внутренних правок без смены связей или публичных имён.
+
+## Архитектурная схема (Canvas)
+
+Актуальная схема: Cursor Canvas
+[`architecture.canvas.tsx`](/home/craz/.cursor/projects/data-Projects-job-search-2/canvases/architecture.canvas.tsx)
+— **несколько простых последовательных шагов** (не одна перегруженная диаграмма).
+
+Сейчас шаги:
+
+1. Слои MVC + Onion (Presentation / Application / Domain / Infrastructure)
+2. Поток GET /me (Controller → UseCase → HhApi → View)
+3. Интерфейс → реализация 
+4. Сборка в entrypoint / HhCli
+5. Login → storageState → резюме / город (UI, playwright-php) 
+6. HTML UI (`public/index.php` → FileCache / UseCase → HtmlPageView) 
+7. Страница откликов (`/?page=applications` → ListPage → ApplicationsPageView)
+8. Страница вакансий (`/?page=vacancies&resume=` → VacancyPage → VacanciesPageView)
+9. Suitable fetch: FetchSuitable (SERP `order_by=publication_time`; ingest→ScoreTen сразу; стоп SERP / 3+ старых подряд / maxIngest) → AssignVacancyResume → LocalDevAiScoring → DevAI
+10. Догон «Оценить N» (`job=score_ten&resume=` → ScoreTen → LocalDevAiScoring → DevAI)
+11. Программный отклик (`busy=apply` / `apply_consider` → ApplyToVacancy / ApplyConsiderBatch → ApplicantPages → HH; анкета → ScreeningFormFiller; письмо → CoverLetterFiller / DevAI / DRAFT_WITH_GAPS|NEEDS_INPUT → TG gaps → Core cover_letters / TG; капча → ServiceCaptchaSolver / 2captcha → TG fallback)
+12. Просмотры резюме (`busy=resume_views` → SyncResumeViews → ResumeViewsStore → VacancyPage)
+13. Журнал ошибок (`/?page=errors` ← AppErrorStore; TG skip → `markSkipped` / фильтр skipped / вакансии `tg_skip`)
+14. Статистика (Grafana row «Статистика»; sync FileCache→Postgres; `/?page=statistics` → редирект)
+15. Перекачка bot-wall (`/?page=rehydrate` / `busy=rehydrate_bot_wall` → RehydrateBotWallVacancies → detail по id → Core → ScoreTen)
+
+Триггеры обновления canvas:
+
+- слои Onion/MVC (новые Controller/UseCase/Domain/Infrastructure) → шаг 1 и при необходимости 2/4/6;
+- публичные интерфейсы или реализации (`HhApi`, `HttpClient`, `Config`, `View`, `ScoringApi`) → шаг 3;
+- поток запроса (entrypoint → … → внешний сервис) → шаг 2;
+- wiring в `bin/*` или `public/*` → шаг 4 / 6 / 7 / 8 / 9 / 10 / 11 / 12 / 13 / 14 / 15.
+
+## Пример entrypoint
+
+```php
+/**
+ * Usage: php bin/hh.php <command> [args…]
+ * Commands: me | login | city | set-city | resumes | resume-text |
+ *           refresh | job-set-city | vacancies | apply | apply-consider | help
+ */
+use JobSearch\Presentation\Cli\HhCli;
+
+exit((new HhCli($root))->run($argv));
+```
