@@ -149,10 +149,11 @@ def main() -> int:
             w=4,
             x=4,
         ),
+        # Не суммируем serp_cards за неделю — на каждом тике одни и те же карточки.
         stat_panel(
             303,
-            "SERP карточек (7 дн.)",
-            """SELECT COALESCE(SUM(serp_cards),0)::int AS value
+            "Прогонов suitable (7 дн.)",
+            """SELECT count(*)::int AS value
 FROM ui_suitable_run_stats
 WHERE finished_at >= now() - interval '7 days'""",
             y0 + 1,
@@ -161,7 +162,7 @@ WHERE finished_at >= now() - interval '7 days'""",
         ),
         stat_panel(
             304,
-            "Скачано / ingest (7 дн.)",
+            "Скачано новых (7 дн.)",
             """SELECT COALESCE(SUM(ingested),0)::int AS value
 FROM ui_suitable_run_stats
 WHERE finished_at >= now() - interval '7 days'""",
@@ -171,8 +172,8 @@ WHERE finished_at >= now() - interval '7 days'""",
         ),
         stat_panel(
             305,
-            "Уже были (skipped_known, 7 дн.)",
-            """SELECT COALESCE(SUM(skipped_known),0)::int AS value
+            "Среднее SERP за прогон",
+            """SELECT COALESCE(ROUND(AVG(serp_cards)::numeric, 0),0)::int AS value
 FROM ui_suitable_run_stats
 WHERE finished_at >= now() - interval '7 days'""",
             y0 + 1,
