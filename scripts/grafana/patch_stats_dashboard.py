@@ -153,7 +153,7 @@ def main() -> int:
             "collapsed": False,
             "panels": [],
         },
-        # Одна плитка: «0/30» и дата под ней (value_and_name).
+        # «0/30» строкой: values=true (без lastNotNull — иначе No data на string).
         {
             "id": 301,
             "type": "stat",
@@ -167,42 +167,45 @@ SELECT
   (COALESCE(SUM(applied_today), 0)::text
     || '/'
     || (COUNT(*) FILTER (WHERE resume_label IN ('TPM','PM','PHP')) * 10)::text)
-    AS \"отклики\",
-  to_char((now() AT TIME ZONE 'Europe/Moscow')::date, 'DD.MM.YYYY') AS \"дата\"
+    AS progress,
+  to_char((now() AT TIME ZONE 'Europe/Moscow')::date, 'DD.MM.YYYY') AS day_label
 FROM ui_resume_stats
 """.strip(),
                     format_as="table",
                 )
             ],
             "options": {
-                "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
+                "reduceOptions": {
+                    "calcs": [],
+                    "fields": "/.*/",
+                    "values": True,
+                    "limit": 1,
+                },
                 "orientation": "vertical",
                 "textMode": "value",
-                "colorMode": "value",
+                "colorMode": "none",
                 "graphMode": "none",
                 "justifyMode": "center",
             },
             "fieldConfig": {
                 "defaults": {
-                    "color": {"mode": "thresholds"},
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [{"color": "blue", "value": None}],
-                    },
-                    "custom": {},
+                    "color": {"mode": "fixed", "fixedColor": "blue"},
                 },
                 "overrides": [
                     {
-                        "matcher": {"id": "byName", "options": "отклики"},
+                        "matcher": {"id": "byName", "options": "progress"},
                         "properties": [
-                            {"id": "displayName", "value": " "},
-                            {"id": "custom.width", "value": 0},
+                            {"id": "displayName", "value": "факт/цель"},
                         ],
                     },
                     {
-                        "matcher": {"id": "byName", "options": "дата"},
+                        "matcher": {"id": "byName", "options": "day_label"},
                         "properties": [
-                            {"id": "color", "value": {"fixedColor": "text", "mode": "fixed"}},
+                            {"id": "displayName", "value": "дата"},
+                            {
+                                "id": "color",
+                                "value": {"fixedColor": "#9aa5b5", "mode": "fixed"},
+                            },
                         ],
                     },
                 ],
