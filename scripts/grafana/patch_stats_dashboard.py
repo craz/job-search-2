@@ -153,7 +153,7 @@ def main() -> int:
             "collapsed": False,
             "panels": [],
         },
-        # «0/30» строкой: values=true (без lastNotNull — иначе No data на string).
+        # Крупно «0/30», мельче дата под ним (value_and_name → name = ${today_msk}).
         {
             "id": 301,
             "type": "stat",
@@ -167,48 +167,35 @@ SELECT
   (COALESCE(SUM(applied_today), 0)::text
     || '/'
     || (COUNT(*) FILTER (WHERE resume_label IN ('TPM','PM','PHP')) * 10)::text)
-    AS progress,
-  to_char((now() AT TIME ZONE 'Europe/Moscow')::date, 'DD.MM.YYYY') AS day_label
+    AS progress
 FROM ui_resume_stats
 """.strip(),
                     format_as="table",
                 )
             ],
             "options": {
-                # limit=1 резал второе поле (дату). values=true — строки без lastNotNull.
                 "reduceOptions": {
                     "calcs": [],
                     "fields": "/.*/",
                     "values": True,
                 },
-                "orientation": "vertical",
+                "orientation": "auto",
                 "textMode": "value_and_name",
                 "colorMode": "none",
                 "graphMode": "none",
                 "justifyMode": "center",
+                "text": {
+                    "valueSize": 42,
+                    "titleSize": 14,
+                },
             },
             "fieldConfig": {
                 "defaults": {
                     "color": {"mode": "fixed", "fixedColor": "blue"},
+                    # Подпись под значением — дата МСК (переменная дашборда).
+                    "displayName": "${today_msk}",
                 },
-                "overrides": [
-                    {
-                        "matcher": {"id": "byName", "options": "progress"},
-                        "properties": [
-                            {"id": "displayName", "value": "факт/цель"},
-                        ],
-                    },
-                    {
-                        "matcher": {"id": "byName", "options": "day_label"},
-                        "properties": [
-                            {"id": "displayName", "value": "дата"},
-                            {
-                                "id": "color",
-                                "value": {"fixedColor": "#9aa5b5", "mode": "fixed"},
-                            },
-                        ],
-                    },
-                ],
+                "overrides": [],
             },
         },
         # Не суммируем serp_cards за неделю — на каждом тике одни и те же карточки.
@@ -257,7 +244,7 @@ WHERE lower(a.verdict) = 'skip'
             307,
             "Что считают плитки выше",
             """
-**Отклики сегодня** — одна плитка `факт/цель`: реальные apply за день МСК / (`TPM+PM+PHP` × 10). Дата — календарный день МСК.
+**Отклики сегодня** — крупно `факт/цель` (apply за день МСК / норма TPM+PM+PHP×10), мельче под ним дата МСК.
 
 **Прогонов suitable** — сколько раз за 7 дней отработал `hh.php vacancies` / schedule по каждому резюме (строки в `ui_suitable_run_stats`).
 
@@ -465,6 +452,35 @@ LIMIT 21""",
     dash["time"] = dash.get("time") or {"from": "now-7d", "to": "now"}
     dash["timezone"] = "Europe/Moscow"
     dash["tags"] = sorted(set((dash.get("tags") or []) + ["статистика", "hh"]))
+    # Дата под «0/30»: переменная обновляется при refresh.
+    dash["templating"] = {
+        "list": [
+            {
+                "name": "today_msk",
+                "label": "Сегодня (МСК)",
+                "type": "query",
+                "datasource": DS,
+                "query": (
+                    "SELECT to_char("
+                    "(now() AT TIME ZONE 'Europe/Moscow')::date, "
+                    "'DD.MM.YYYY')"
+                ),
+                "regex": "",
+                "includeAll": False,
+                "multi": False,
+                "refresh": 2,
+                "hide": 2,
+                "current": {},
+                "options": [],
+                "definition": (
+                    "SELECT to_char("
+                    "(now() AT TIME ZONE 'Europe/Moscow')::date, "
+                    "'DD.MM.YYYY')"
+                ),
+            }
+        ]
+    }
+    # Скрыть UI переменных (hide=2), но подпись в stat работает.
 
     result = api(
         "POST",
