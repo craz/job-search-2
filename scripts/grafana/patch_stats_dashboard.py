@@ -101,6 +101,25 @@ def stat_panel(pid: int, title: str, sql: str, y: int, w: int = 4, x: int = 0) -
     }
 
 
+def text_panel(pid: int, title: str, markdown: str, y: int, h: int = 5, w: int = 24, x: int = 0) -> dict:
+    return {
+        "id": pid,
+        "type": "text",
+        "title": title,
+        "gridPos": {"h": h, "w": w, "x": x, "y": y},
+        "options": {
+            "mode": "markdown",
+            "code": {"language": "markdown", "showLineNumbers": False, "showMiniMap": False},
+            "content": markdown.strip() + "\n",
+        },
+        "transparent": False,
+    }
+
+
+# Высота блока «Статистика» (для сдвига остальных row; последний text y=57 h=3).
+STATS_BLOCK_H = 61
+
+
 def main() -> int:
     raw = api("GET", f"/api/dashboards/uid/{DASH_UID}")
     dash = raw["dashboard"]
@@ -112,15 +131,16 @@ def main() -> int:
         for p in panels
         if not (
             (p.get("type") == "row" and p.get("id") == 300)
-            or (isinstance(p.get("id"), int) and 301 <= int(p["id"]) <= 320)
+            or (isinstance(p.get("id"), int) and 301 <= int(p["id"]) <= 340)
         )
     ]
 
-    # Сдвинуть остальные панели вниз под новый row (~34).
-    for p in panels:
-        gp = p.get("gridPos") or {}
-        if "y" in gp:
-            gp["y"] = int(gp["y"]) + 34
+    # Идемпотентный сдвиг: остальные блоки сразу под статистику (без накопления y).
+    if panels:
+        min_y = min(int((p.get("gridPos") or {}).get("y", 0)) for p in panels)
+        for p in panels:
+            gp = p.get("gridPos") or {}
+            gp["y"] = int(gp.get("y", 0)) - min_y + STATS_BLOCK_H
             p["gridPos"] = gp
 
     y0 = 0
@@ -191,6 +211,25 @@ WHERE lower(a.verdict) = 'skip'
             w=4,
             x=20,
         ),
+        text_panel(
+            307,
+            "Что считают плитки выше",
+            """
+**Отклики сегодня** — реальные нажатия «Откликнуться» / Playwright apply из `applied_by_vacancy` за календарный день МСК (не вердикт DevAI APPLY).
+
+**Цель × резюме (10)** — `число живых резюме TPM/PM/PHP × 10` (норма откликов в день).
+
+**Прогонов suitable** — сколько раз за 7 дней отработал `hh.php vacancies` / schedule по каждому резюме (строки в `ui_suitable_run_stats`).
+
+**Скачано новых** — сумма `ingested`: карточки, которые реально ушли в Core detail (не «уже были»).
+
+**Среднее SERP за прогон** — средний размер выдачи HH на один прогон. **Не** уникальные вакансии за неделю (на каждом тике снова те же карточки).
+
+**SKIP DevAI** — число оценок со вердиктом `skip` в Core `assessments` за 7 дней (включая ручной skip).
+""",
+            y0 + 5,
+            h=7,
+        ),
         timeseries_panel(
             310,
             "Скачивание suitable: SERP / уже были / скачано",
@@ -210,7 +249,7 @@ FROM (
 ) s
 GROUP BY 1, 2
 ORDER BY 1""",
-            y0 + 5,
+            y0 + 12,
             h=9,
             w=12,
             x=0,
@@ -226,10 +265,25 @@ FROM ui_suitable_run_stats
 WHERE $__timeFilter(finished_at)
 GROUP BY 1, 2
 ORDER BY 1""",
-            y0 + 5,
+            y0 + 12,
             h=9,
             w=12,
             x=12,
+        ),
+        text_panel(
+            317,
+            "Что на графиках скачивания",
+            """
+**Слева:** по часам сумма метрик прогонов в окне дашборда.
+
+- **SERP** — сколько карточек HH показал в выдаче «подходящие» (за прогон; в часе суммируются все прогоны).
+- **уже были** — из них уже известны (`skipped_known`), detail не качали.
+- **скачано** — новый ingest в Core.
+
+**Справа:** только **скачано (ingest)** с разбивкой TPM / PM / PHP. Если SERP большой, а скачано ≈ 0 — дедуп отрабатывает, новых вакансий нет.
+""",
+            y0 + 21,
+            h=5,
         ),
         timeseries_panel(
             312,
@@ -242,7 +296,7 @@ FROM ui_applied_events
 WHERE $__timeFilter(applied_at)
 GROUP BY 1, 2
 ORDER BY 1""",
-            y0 + 14,
+            y0 + 26,
             h=9,
             w=12,
             x=0,
@@ -267,10 +321,21 @@ WHERE $__timeFilter(a.assessed_at)
   AND lower(a.verdict) IN ('apply','maybe','skip')
 GROUP BY 1, 2
 ORDER BY 1""",
-            y0 + 14,
+            y0 + 26,
             h=9,
             w=12,
             x=12,
+        ),
+        text_panel(
+            318,
+            "Что на графиках откликов и оценок",
+            """
+**Слева — отклики:** число успешных apply по календарным дням МСК и резюме (`ui_applied_events`). Это факт отправки на HH, не вердикт DevAI APPLY.
+
+**Справа — оценки DevAI:** сколько assessment’ов `skip` / `apply` / `maybe` за день, привязка к резюме через owner (`ui_vacancy_owner`). APPLY здесь = «можно смотреть/откликаться», а не «уже откликнулись».
+""",
+            y0 + 35,
+            h=4,
         ),
         table_panel(
             314,
@@ -288,7 +353,7 @@ FROM ui_resume_stats
 WHERE resume_label IN ('TPM','PM','PHP')
    OR applied_total > 0 OR owned > 0
 ORDER BY resume_label""",
-            y0 + 23,
+            y0 + 39,
             h=7,
             w=12,
             x=0,
@@ -309,10 +374,21 @@ ORDER BY resume_label""",
 FROM ui_suitable_run_stats
 ORDER BY finished_at DESC NULLS LAST
 LIMIT 40""",
-            y0 + 23,
+            y0 + 39,
             h=7,
             w=12,
             x=12,
+        ),
+        text_panel(
+            319,
+            "Что в таблицах",
+            """
+**По резюме:** снимок `ui_resume_stats` — отклики сегодня/всего и сколько вакансий закреплено за резюме после дедупа (`owner` / `shared` / `sole`).
+
+**Последние прогоны:** сырой журнал suitable — `serp` vs `уже были` vs `скачано` по каждому запуску. Колонка `старые` — отсечены по дате публикации.
+""",
+            y0 + 46,
+            h=4,
         ),
         table_panel(
             316,
@@ -328,10 +404,19 @@ LIMIT 40""",
 FROM daily_metrics
 ORDER BY metric_date DESC
 LIMIT 21""",
-            y0 + 30,
+            y0 + 50,
             h=7,
             w=24,
             x=0,
+        ),
+        text_panel(
+            320,
+            "daily_metrics",
+            """
+Дневной снимок Core (`PUT /api/v1/metrics/{date}` с главной через `SyncDailyProgress`): агрегат откликов/просмотров за день. Пишется при заходе на главную UI, не из каждого apply.
+""",
+            y0 + 57,
+            h=3,
         ),
     ]
 

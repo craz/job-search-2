@@ -16,7 +16,7 @@
 | История дня | Core `daily_metrics` | SQL на дашборде |
 
 Синк: `scripts/grafana/sync_live_jobs.py` (live job каждые 2 с, статистика каждые 30 с).  
-Дашборд дописывается скриптом `scripts/grafana/patch_stats_dashboard.py`.
+Дашборд дописывается скриптом `scripts/grafana/patch_stats_dashboard.py` (под каждым блоком — text/markdown «что считается»).
 
 ## Что убрано из PHP
 
