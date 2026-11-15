@@ -179,7 +179,8 @@ FROM ui_resume_stats
                     "fields": "/.*/",
                     "values": True,
                 },
-                "orientation": "auto",
+                # vertical: дата под 0/30; auto на широкой плитке ставит сбоку.
+                "orientation": "vertical",
                 "textMode": "value_and_name",
                 "colorMode": "none",
                 "graphMode": "none",
