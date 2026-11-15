@@ -15,7 +15,7 @@ use Playwright\Page\PageInterface;
 
 /**
  * Use case: SERP «подходящие» → деталь → Core ingest → owner assign (дедуп резюме).
- * Только новые (не в peerIndex) и не старше maxAgeDays по дате публикации HH.
+ * Только ещё без Core vacancy (не «видел в SERP с terminal_error») и не старше maxAgeDays.
  * С колбэками — сразу DevAI; стоп только SERP / возраст / maxIngest
  * (не останавливаемся из‑за уже набранных apply/maybe).
  */
@@ -31,6 +31,14 @@ final class FetchSuitable
 
     /** @var array<string, list<string>> external_id → resume_ids */
     private array $peerIndex = [];
+
+    /**
+     * Уже есть vacancy в Core — не качаем detail снова.
+     * Discovery с terminal_error / без vacancy_id сюда не входит (иначе вечный skipped_known).
+     *
+     * @var array<string, true>
+     */
+    private array $hydratedKnown = [];
 
     /** @var array<string, string> resume_id → title */
     private array $resumeTitles = [];
@@ -84,7 +92,7 @@ final class FetchSuitable
         $maxIngestPerResume = max(1, $maxIngestPerResume);
 
         $this->resumeTitles = $this->normalizeResumeTitles($resumes);
-        $this->peerIndex = $this->assignOwner?->peerIndexFromCore() ?? [];
+        $this->loadPeerState();
 
         $context = $this->browser->openChromium($storageStatePath);
         try {
@@ -179,7 +187,7 @@ final class FetchSuitable
         if (!isset($this->resumeTitles[$resumeId])) {
             $this->resumeTitles[$resumeId] = $this->resumeTitles[$resumeId] ?? '';
         }
-        $this->peerIndex = $this->assignOwner?->peerIndexFromCore() ?? [];
+        $this->loadPeerState();
 
         $context = $this->browser->openChromium($storageStatePath);
         try {
@@ -239,13 +247,13 @@ final class FetchSuitable
             throw new CoreException('Core SearchRun id missing after start');
         }
 
-        // Уже видели в suitable-run (любое резюме) — не качаем снова; добираем ниже по выдаче.
-        // Исключение: bot-wall в Core («не робот») — перекачиваем detail.
+        // Уже есть в Core — не качаем снова. SERP-only / terminal_error — можно докачать.
+        // bot-wall в очереди rehydrate — тоже не в exclude.
         /** @var array<string, true> $rehydrateIds */
         $rehydrateIds = $this->rehydrate?->externalIdSet() ?? [];
         /** @var array<string, true> $exclude */
         $exclude = [];
-        foreach (array_keys($this->peerIndex) as $ext) {
+        foreach (array_keys($this->hydratedKnown) as $ext) {
             $ext = trim((string) $ext);
             if ($ext === '' || isset($rehydrateIds[$ext])) {
                 continue;
@@ -521,6 +529,34 @@ final class FetchSuitable
             'failed' => $failed,
             'scored' => $scored,
         ]);
+    }
+
+    /** Peers для assign + hydratedKnown для exclude (только с Core vacancy_id). */
+    private function loadPeerState(): void
+    {
+        $this->peerIndex = [];
+        $this->hydratedKnown = [];
+        if ($this->assignOwner === null) {
+            return;
+        }
+        $rich = $this->assignOwner->peerIndexRichFromCore();
+        foreach ($rich as $ext => $meta) {
+            $ext = trim((string) $ext);
+            if ($ext === '' || !is_array($meta)) {
+                continue;
+            }
+            $peers = [];
+            foreach (is_array($meta['peers'] ?? null) ? $meta['peers'] : [] as $p) {
+                $p = trim((string) $p);
+                if ($p !== '') {
+                    $peers[] = $p;
+                }
+            }
+            $this->peerIndex[$ext] = $peers;
+            if (trim((string) ($meta['core_id'] ?? '')) !== '') {
+                $this->hydratedKnown[$ext] = true;
+            }
+        }
     }
 
     private function notePeerAndAssign(string $resumeId, VacancyDetail $detail): void
