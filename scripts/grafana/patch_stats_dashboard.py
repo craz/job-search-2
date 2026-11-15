@@ -179,12 +179,13 @@ FROM ui_resume_stats
                     "fields": "/.*/",
                     "values": True,
                 },
-                # vertical: дата под 0/30; auto на широкой плитке ставит сбоку.
+                # wideLayout=false — иначе на широкой плитке дата слева от 0/30.
                 "orientation": "vertical",
                 "textMode": "value_and_name",
                 "colorMode": "none",
                 "graphMode": "none",
                 "justifyMode": "center",
+                "wideLayout": False,
                 "text": {
                     "valueSize": 42,
                     "titleSize": 14,
