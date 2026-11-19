@@ -39,12 +39,12 @@ final class VacancyOwnerTitleRules
             $title,
         ) === 1;
         $isProductTitle = preg_match(
-            '/product\s*owner|\bpo\b|\bcpo\b|product\s*manager|head\s+of\s+product|продакт|менеджер\s+(?:по\s+)?(?:\S+\s+)?продукт|руководитель\s+продукт|\bproduct\b/u',
+            '/product\s*owner|\bpo\b|\bcpo\b|product\s*manager|head\s+of\s+product|продакт|владелец\w*\s+(?:по\s+)?(?:\S+\s+)*продукт|менеджер\s+(?:по\s+)?(?:\S+\s+)?продукт|руководитель\s+продукт|\bproduct\b/u',
             $title,
         ) === 1;
-        // RU: «Проектный менеджер», «менеджер проектов», «директор проектов» — не только EN project manager.
+        // RU: «Проектный менеджер», «менеджер проектов», «директор проектов», PMO — не только EN project manager.
         $isPmTitle = preg_match(
-            '/project\s*manager|проектн\w*\s+менеджер|менеджер\s+(?:по\s+)?проект|руководитель\s+(?:it|ит)[-\s]?проект|менеджер\s+(?:it|ит)[-\s]?проект|руководитель\s+(?:портфеля\s+)?проектов|директор\s+проектов|администратор\s+проект/u',
+            '/project\s*manager|проектн\w*\s+менеджер|менеджер\s+(?:по\s+)?проект|руководитель\s+(?:it|ит)[-\s]?проект|менеджер\s+(?:it|ит)[-\s]?проект|руководитель\s+(?:портфеля\s+)?проектов|директор\s+проектов|администратор\s+проект|\bpmo\b|project\s*office|проектн\w*\s+офис|руководитель\s+проектн/u',
             $title,
         ) === 1;
         // Scrum/HIT-резюме сняты: facilitation → ближайший TPM/Delivery.

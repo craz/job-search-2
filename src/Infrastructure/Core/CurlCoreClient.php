@@ -26,8 +26,8 @@ final class CurlCoreClient implements CoreApi
     {
         $base = rtrim($config->get('CORE_API_URL', 'http://127.0.0.1:18000') ?? 'http://127.0.0.1:18000', '/');
 
-        // Core на localhost — без HH_PROXY.
-        return new self($http ?? new CurlHttpClient(''), $base);
+        // Core на localhost — без HH_PROXY. Короткий timeout: UI на php -S не клинит навечно.
+        return new self($http ?? new CurlHttpClient('', 15, 3), $base);
     }
 
     public function ingestVacancy(array $payload): array

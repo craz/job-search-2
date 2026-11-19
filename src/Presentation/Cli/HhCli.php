@@ -1050,14 +1050,7 @@ TXT;
             /** @var CoreApi $core */
             $core = CurlCoreClient::fromConfig($config);
             $ownerStore = new VacancyResumeOwnerStore($cache);
-            $assignOwner = new AssignVacancyResume(
-                $ownerStore,
-                CurlDevAiClient::fromConfig($config),
-                trim((string) ($config->get('DEVAI_MODEL', 'devai/auto') ?? 'devai/auto')) ?: 'devai/auto',
-                $this->root . '/config/scoring/prompts/assign_vacancy_resume.txt',
-                $cache,
-                $core,
-            );
+            $assignOwner = new AssignVacancyResume($ownerStore, $core);
             // Тот же фильтр «Смотрим», что в UI: без отказов / исключений / ошибок apply.
             $vacancyPage = new VacancyPage(
                 new ListForResume($core),
@@ -1245,7 +1238,12 @@ TXT;
             $core = CurlCoreClient::fromConfig($config);
             /** @var ScoringApi $scoring */
             $scoring = LocalDevAiScoring::fromConfig($config, $core, $this->root);
-            $scoreTen = new ScoreTen($core, $scoring, new SyncResumeContext($core, $cache));
+            $scoreTen = new ScoreTen(
+                $core,
+                $scoring,
+                new SyncResumeContext($core, $cache),
+                new VacancyResumeOwnerStore($cache),
+            );
             $store = new BotWallRehydrateStore($cache);
             $result = (new BotWallRehydrateController(
                 new ListBotWallRehydrate($store, $core, new VacancyResumeOwnerStore($cache)),
@@ -1362,7 +1360,8 @@ TXT;
     }
 
     /**
-     * Пересмотр owner: source=first → title-rules / DevAI (без нового fetch).
+     * Пересмотр provisional owner: source=first → title-rules (без нового fetch).
+     * Финальный owner=score не трогаем.
      */
     private function assignReconcile(string $mode = ''): int
     {
@@ -1373,10 +1372,6 @@ TXT;
             $core = CurlCoreClient::fromConfig($config);
             $assignOwner = new AssignVacancyResume(
                 new VacancyResumeOwnerStore($cache),
-                CurlDevAiClient::fromConfig($config),
-                trim((string) ($config->get('DEVAI_MODEL', 'devai/auto') ?? 'devai/auto')) ?: 'devai/auto',
-                $this->root . '/config/scoring/prompts/assign_vacancy_resume.txt',
-                $cache,
                 $core,
             );
             $titlesById = [];
@@ -1518,14 +1513,7 @@ TXT;
             /** @var CoreApi $core */
             $core = CurlCoreClient::fromConfig($config);
             $ownerStore = new VacancyResumeOwnerStore($cache);
-            $assignOwner = new AssignVacancyResume(
-                $ownerStore,
-                CurlDevAiClient::fromConfig($config),
-                trim((string) ($config->get('DEVAI_MODEL', 'devai/auto') ?? 'devai/auto')) ?: 'devai/auto',
-                $this->root . '/config/scoring/prompts/assign_vacancy_resume.txt',
-                $cache,
-                $core,
-            );
+            $assignOwner = new AssignVacancyResume($ownerStore, $core);
 
             $allTitles = [];
             foreach ($resumeItems as $row) {
@@ -1541,7 +1529,12 @@ TXT;
 
             /** @var ScoringApi $scoring */
             $scoring = LocalDevAiScoring::fromConfig($config, $core, $this->root);
-            $scoreTen = new ScoreTen($core, $scoring, new SyncResumeContext($core, $cache));
+            $scoreTen = new ScoreTen(
+                $core,
+                $scoring,
+                new SyncResumeContext($core, $cache),
+                new VacancyResumeOwnerStore($cache),
+            );
             $listForResume = new ListForResume($core);
 
             $fetch = new FetchSuitable(
@@ -1552,6 +1545,7 @@ TXT;
                 FetchSuitable::DEFAULT_MAX_AGE_DAYS,
                 new SuitableRunStatsStore($cache),
                 new BotWallRehydrateStore($cache),
+                $ownerStore,
             );
             $fetch->withResumeTitles($allTitles);
 

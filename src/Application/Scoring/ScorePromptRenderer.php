@@ -26,8 +26,9 @@ final class ScorePromptRenderer
     /**
      * @param array<string, mixed> $vacancy Core VacancyRead
      * @param array<string, mixed> $resumeContext краткий контекст резюме
+     * @param array<string, string> $ownerCandidates resume_id → title
      */
-    public function render(array $vacancy, array $resumeContext): string
+    public function render(array $vacancy, array $resumeContext, array $ownerCandidates = []): string
     {
         $template = is_readable($this->templatePath)
             ? (string) file_get_contents($this->templatePath)
@@ -39,6 +40,7 @@ final class ScorePromptRenderer
         $company = is_array($vacancy['company'] ?? null) ? $vacancy['company'] : [];
         $map = [
             '{{POLICY}}' => $this->truncate($this->profile->policyText, 6000),
+            '{{OWNER_CANDIDATES}}' => $this->ownerCandidatesBlock($ownerCandidates),
             '{{RESUME}}' => $this->truncate($this->resumeBlock($resumeContext), 8000),
             '{{TITLE}}' => trim((string) ($vacancy['title'] ?? '')),
             '{{COMPANY}}' => trim((string) ($company['name'] ?? '')),
@@ -51,6 +53,26 @@ final class ScorePromptRenderer
         ];
 
         return strtr($template, $map);
+    }
+
+    /**
+     * @param array<string, string> $ownerCandidates
+     */
+    private function ownerCandidatesBlock(array $ownerCandidates): string
+    {
+        if ($ownerCandidates === []) {
+            return '(нет активных резюме в кеше — owner_resume_id всё равно укажи, если знаешь id)';
+        }
+        $lines = [];
+        foreach ($ownerCandidates as $id => $title) {
+            $id = trim((string) $id);
+            if ($id === '') {
+                continue;
+            }
+            $lines[] = '- id: ' . $id . "\n  title: " . trim((string) $title);
+        }
+
+        return $lines !== [] ? implode("\n", $lines) : '(пусто)';
     }
 
     /**

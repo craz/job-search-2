@@ -11,6 +11,7 @@ final class CurlHttpClient implements HttpClient
     public function __construct(
         private readonly string $proxy = '',
         private readonly int $timeoutSeconds = 30,
+        private readonly int $connectTimeoutSeconds = 3,
     ) {}
 
     public function get(string $url, array $headers = []): HttpResponse
@@ -49,6 +50,7 @@ final class CurlHttpClient implements HttpClient
         $opts = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER => $curlHeaders,
+            CURLOPT_CONNECTTIMEOUT => max(1, $this->connectTimeoutSeconds),
             CURLOPT_TIMEOUT => $this->timeoutSeconds,
             CURLOPT_CUSTOMREQUEST => $method,
         ];

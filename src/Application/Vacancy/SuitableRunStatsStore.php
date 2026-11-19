@@ -24,6 +24,8 @@ final class SuitableRunStatsStore
      *   finished_at?: string,
      *   status?: string,
      *   serp_cards: int,
+     *   hh_total?: int|null,
+     *   in_db?: int,
      *   skipped_known: int,
      *   skipped_old: int,
      *   ingested: int,
@@ -44,6 +46,7 @@ final class SuitableRunStatsStore
         $payload = is_array($entry?->payload) ? $entry->payload : [];
         /** @var array<string, array<string, mixed>> $byId */
         $byId = is_array($payload['by_id'] ?? null) ? $payload['by_id'] : [];
+        $hhTotal = $row['hh_total'] ?? null;
         $byId[$runId] = [
             'search_run_id' => $runId,
             'resume_id' => trim((string) ($row['resume_id'] ?? '')),
@@ -52,6 +55,8 @@ final class SuitableRunStatsStore
             'finished_at' => trim((string) ($row['finished_at'] ?? gmdate('c'))),
             'status' => trim((string) ($row['status'] ?? '')),
             'serp_cards' => max(0, (int) ($row['serp_cards'] ?? 0)),
+            'hh_total' => is_numeric($hhTotal) ? max(0, (int) $hhTotal) : null,
+            'in_db' => max(0, (int) ($row['in_db'] ?? 0)),
             'skipped_known' => max(0, (int) ($row['skipped_known'] ?? 0)),
             'skipped_old' => max(0, (int) ($row['skipped_old'] ?? 0)),
             'ingested' => max(0, (int) ($row['ingested'] ?? 0)),

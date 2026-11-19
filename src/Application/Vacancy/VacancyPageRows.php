@@ -84,6 +84,7 @@ final class VacancyPageRows
             $all[$index]['owner_resume_id'] = $ownership['owner_resume_id'];
             $all[$index]['owner_resume_title'] = $ownership['owner_resume_title'];
             $all[$index]['owner_reason'] = $ownership['owner_reason'];
+            $all[$index]['owner_source'] = $ownership['owner_source'];
             $all[$index]['can_apply'] = !$ownership['is_duplicate']
                 && ($ownership['owner_resume_id'] === '' || $ownership['owner_resume_id'] === $resumeId);
 
@@ -211,6 +212,7 @@ final class VacancyPageRows
                 'owner_resume_id',
                 'owner_resume_title',
                 'owner_reason',
+                'owner_source',
                 'company_rejection_hint',
                 'apply_error_message',
                 'apply_error_at',

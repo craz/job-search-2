@@ -45,7 +45,10 @@ interface ApplicantPages
     /**
      * Карточки одной страницы suitable-SERP (без фильтра «уже скачано»).
      *
-     * @return list<\JobSearch\Domain\Vacancy\VacancyCard>
+     * @return array{
+     *   items: list<\JobSearch\Domain\Vacancy\VacancyCard>,
+     *   total: int|null
+     * }
      */
     public function readSuitableSerpPage(PageInterface $page, string $resumeId, int $serpPage): array;
 

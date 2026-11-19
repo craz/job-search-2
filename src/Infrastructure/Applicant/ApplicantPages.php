@@ -79,7 +79,8 @@ final class ApplicantPages implements ApplicantPagesPort
 
         $out = [];
         for ($serpPage = 0; $serpPage < $maxPages && count($out) < $limit; $serpPage++) {
-            $pageCards = $this->readSuitableSerpPage($page, $resumeId, $serpPage);
+            $pageResult = $this->readSuitableSerpPage($page, $resumeId, $serpPage);
+            $pageCards = $pageResult['items'];
             if ($pageCards === []) {
                 break;
             }
@@ -102,7 +103,7 @@ final class ApplicantPages implements ApplicantPagesPort
     /**
      * Все карточки одной страницы suitable-SERP (без фильтра «уже скачано»).
      *
-     * @return list<VacancyCard>
+     * @return array{items: list<VacancyCard>, total: int|null}
      */
     public function readSuitableSerpPage(PageInterface $page, string $resumeId, int $serpPage): array
     {
@@ -112,14 +113,37 @@ final class ApplicantPages implements ApplicantPagesPort
         $payload = $page->evaluate(
             <<<'JS'
 () => {
-  const bodyText = ((document.body && document.body.innerText) || '').slice(0, 2000);
+  const bodyText = ((document.body && document.body.innerText) || '').slice(0, 4000);
   const title = document.title || '';
   if (/ddos[\s_-]*guard/i.test(title) || /checking your browser/i.test(bodyText)) {
-    return { kind: 'captcha_or_action_required', items: [] };
+    return { kind: 'captcha_or_action_required', items: [], total: null };
   }
   if (document.querySelector('[data-qa="account-login-form"], [data-qa="applicant-login-card"], [data-qa="login"]')) {
-    return { kind: 'login_required', items: [] };
+    return { kind: 'login_required', items: [], total: null };
   }
+  const parseTotal = () => {
+    // Не путать с пунктом меню «50 вакансий» (items_on_page).
+    // Канон: «Найдено 769 подходящих вакансий для резюме».
+    const prefer = [
+      document.querySelector('[data-qa="vacancies-search-header"] [data-qa="title"]'),
+      document.querySelector('[data-qa="vacancies-search-header"]'),
+      document.querySelector('[data-qa="title"]'),
+      document.querySelector('h1'),
+    ].filter(Boolean);
+    const take = (text) => {
+      const t = (text || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+      let m = t.match(/найден[оа]?\s+(\d[\d\s]*)\s+подходящих\s+ваканси/i);
+      if (!m) m = t.match(/найден[оа]?\s+(\d[\d\s]*)/i);
+      if (!m) return null;
+      const n = parseInt(m[1].replace(/[^\d]/g, ''), 10);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    for (const el of prefer) {
+      const n = take(el.textContent);
+      if (n !== null) return n;
+    }
+    return take(bodyText);
+  };
   const cards = Array.from(document.querySelectorAll('[data-qa="vacancy-serp__vacancy"]'));
   const items = [];
   const seen = new Set();
@@ -157,7 +181,7 @@ final class ApplicantPages implements ApplicantPagesPort
       area_text: area || null,
     });
   }
-  return { kind: 'ok', items };
+  return { kind: 'ok', items, total: parseTotal() };
 }
 JS
         );
@@ -176,7 +200,7 @@ JS
         $out = [];
         $rawItems = $payload['items'] ?? [];
         if (!is_array($rawItems)) {
-            return [];
+            return ['items' => [], 'total' => null];
         }
         foreach ($rawItems as $row) {
             if (!is_array($row)) {
@@ -201,7 +225,12 @@ JS
             );
         }
 
-        return $out;
+        $total = null;
+        if (isset($payload['total']) && is_numeric($payload['total'])) {
+            $total = max(0, (int) $payload['total']);
+        }
+
+        return ['items' => $out, 'total' => $total];
     }
 
     /** Полное описание вакансии со страницы /vacancy/{id}. */

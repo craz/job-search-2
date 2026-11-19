@@ -5,21 +5,15 @@ namespace JobSearch\Application\Vacancy;
 
 use JobSearch\Domain\Core\CoreApi;
 use JobSearch\Domain\Core\CoreException;
-use JobSearch\Domain\DevAi\DevAi;
-use JobSearch\Domain\DevAi\DevAiException;
-use JobSearch\Infrastructure\Cache\Cache;
 
 /**
- * Назначить резюме-владельца вакансии: first или DevAI при нескольких peers.
+ * Provisional owner при ingest: title-rules или first suitable.
+ * Финальный owner пишет LocalDevAiScoring (source=score) при оценке.
  */
 final class AssignVacancyResume
 {
     public function __construct(
         private readonly VacancyResumeOwnerStore $store,
-        private readonly DevAi $devAi,
-        private readonly string $model,
-        private readonly string $promptPath,
-        private readonly ?Cache $cache = null,
         private readonly ?CoreApi $core = null,
     ) {}
 
@@ -72,8 +66,8 @@ final class AssignVacancyResume
         $candSorted = $devAiCandidates;
         sort($candSorted);
         if (!$force && $existing !== null) {
-            // Ручной override не перетираем reconcile/DevAI.
-            if (($existing['source'] ?? '') === 'manual') {
+            // manual / score (финал из DevAI score) не перетираем provisional assign.
+            if (in_array((string) ($existing['source'] ?? ''), ['manual', 'score'], true)) {
                 return [
                     'resume_id' => $existing['resume_id'],
                     'resume_title' => $existing['resume_title'],
@@ -86,8 +80,7 @@ final class AssignVacancyResume
             $sameCandidates = $prev === $candSorted
                 && in_array($existing['resume_id'], $devAiCandidates, true);
             $source = (string) ($existing['source'] ?? '');
-            // rules/devai при тех же кандидатах — кэш; first / один peer без force — оставляем.
-            // first при ≥2 suitable-peers или force — пересматриваем ниже.
+            // rules/devai (legacy) при тех же кандидатах — кэш; first без force — ниже.
             if ($sameCandidates && in_array($source, ['devai', 'rules'], true)) {
                 return [
                     'resume_id' => $existing['resume_id'],
@@ -181,48 +174,37 @@ final class AssignVacancyResume
             ];
         }
 
-        // Без title DevAI слепой — не жжём токены, оставляем/ставим first.
-        if (trim((string) ($vacancy['title'] ?? '')) === '') {
-            $resumeId = is_array($existing) ? trim((string) ($existing['resume_id'] ?? '')) : '';
-            if ($resumeId === '' || ($resumeTitles !== [] && !isset($resumeTitles[$resumeId]))) {
-                $resumeId = $peers[0] ?? ($devAiCandidates[0] ?? '');
-            }
-            if ($resumeId === '') {
-                throw new \InvalidArgumentException('no active resume for vacancy');
-            }
-            $prevReason = is_array($existing) ? trim((string) ($existing['reason'] ?? '')) : '';
-            $title = trim((string) ($resumeTitles[$resumeId] ?? ''));
-            if ($title === '' && is_array($existing)) {
-                $title = trim((string) ($existing['resume_title'] ?? ''));
-            }
-            $reason = $prevReason !== ''
-                ? $prevReason
-                : 'Первое появление в suitable (нет title для rules/DevAI).';
-            $this->store->put(
-                $vacancyExternalId,
-                $resumeId,
-                $title,
-                'first',
-                $reason,
-                $devAiCandidates !== [] ? $devAiCandidates : $peers,
-                $peers,
-            );
-
-            return [
-                'resume_id' => $resumeId,
-                'resume_title' => $title,
-                'source' => 'first',
-                'reason' => $reason,
-            ];
+        // Без rules — provisional first; финальный owner выставит Score (source=score).
+        $resumeId = $peers[0] ?? ($devAiCandidates[0] ?? '');
+        if ($resumeId === '' && is_array($existing)) {
+            $resumeId = trim((string) ($existing['resume_id'] ?? ''));
         }
-
-        return $this->assignViaDevAi(
+        if ($resumeId === '') {
+            throw new \InvalidArgumentException('no active resume for vacancy');
+        }
+        $title = trim((string) ($resumeTitles[$resumeId] ?? ''));
+        if ($title === '' && is_array($existing)) {
+            $title = trim((string) ($existing['resume_title'] ?? ''));
+        }
+        $reason = trim((string) ($vacancy['title'] ?? '')) === ''
+            ? 'Первое появление в suitable (нет title для rules; owner уточнит score).'
+            : 'Первое появление в suitable (owner уточнит score).';
+        $this->store->put(
             $vacancyExternalId,
-            $devAiCandidates,
-            $vacancy,
-            $resumeTitles,
+            $resumeId,
+            $title,
+            'first',
+            $reason,
+            $devAiCandidates !== [] ? $devAiCandidates : $peers,
             $peers,
         );
+
+        return [
+            'resume_id' => $resumeId,
+            'resume_title' => $title,
+            'source' => 'first',
+            'reason' => $reason,
+        ];
     }
 
     /**
@@ -554,12 +536,14 @@ final class AssignVacancyResume
     }
 
     /**
-     * Догнать owner по пересечениям suitable + слепые DevAI; first→rules — через reconcileStaleFirst.
+     * Догнать provisional owner по пересечениям suitable; first→rules — через reconcileStaleFirst.
+     * source=score/manual не трогаем (финал из оценки / ручной).
      *
      * @param array<string, string> $resumeTitles
      */
     public function reconcileMultiPeers(array $resumeTitles, bool $forceBlindDevAi = false): int
     {
+        unset($forceBlindDevAi); // legacy arg; DevAI-assign убран — score финалит owner.
         $done = $this->reconcileStaleFirst($resumeTitles);
 
         $rich = $this->peerIndexRichFromCore();
@@ -597,14 +581,16 @@ final class AssignVacancyResume
                 continue;
             }
             $before = $this->store->get($ext);
-            $force = $forceBlindDevAi && $this->isBlindDevAiDecision($before);
-            // first уже закрыт reconcileStaleFirst; здесь — новые пересечения / blind DevAI.
-            if (!$force && is_array($before) && in_array((string) ($before['source'] ?? ''), ['rules', 'devai', 'manual'], true)) {
+            // score/manual/rules/legacy-devai при тех же candidates — не гоняем provisional.
+            if (is_array($before) && in_array((string) ($before['source'] ?? ''), ['rules', 'devai', 'manual', 'score'], true)) {
                 $prev = $before['candidates'] ?? [];
                 sort($prev);
                 $cand = $this->candidateResumeIds($peers, $resumeTitles);
                 sort($cand);
                 if ($prev === $cand) {
+                    continue;
+                }
+                if (in_array((string) ($before['source'] ?? ''), ['manual', 'score'], true)) {
                     continue;
                 }
             }
@@ -622,7 +608,6 @@ final class AssignVacancyResume
                         : (is_array($fromAsm) ? ($fromAsm['core_id'] ?? '') : ''))),
                 ],
                 $resumeTitles,
-                $force,
             );
             $after = $this->store->get($ext);
             if ($before === null || ($after !== null && (
@@ -687,24 +672,6 @@ final class AssignVacancyResume
     }
 
     /**
-     * @param array{resume_id?: string, source?: string, reason?: string}|null $row
-     */
-    private function isBlindDevAiDecision(?array $row): bool
-    {
-        if ($row === null) {
-            return false;
-        }
-        if (($row['source'] ?? '') !== 'devai') {
-            return false;
-        }
-        $reason = mb_strtolower((string) ($row['reason'] ?? ''), 'UTF-8');
-
-        return str_contains($reason, 'отсутств')
-            || str_contains($reason, 'нет назван')
-            || str_contains($reason, 'нет описан');
-    }
-
-    /**
      * @param array{title?: string, company_name?: string, url?: string, description?: string|null, core_id?: string} $vacancy
      *
      * @return array{title: string, company_name: string, url: string, description: string, core_id: string}
@@ -763,170 +730,5 @@ final class AssignVacancyResume
             'description' => $desc,
             'core_id' => $coreId,
         ];
-    }
-
-    /**
-     * @param list<string> $peers
-     * @param array{title?: string, company_name?: string, url?: string, description?: string|null} $vacancy
-     * @param array<string, string> $resumeTitles
-     *
-     * @return array{resume_id: string, resume_title: string, source: string, reason: string}
-     */
-    /**
-     * @param list<string> $candidates пул DevAI
-     * @param list<string> $suitablePeers фактические suitable
-     * @param array{title?: string, company_name?: string, url?: string, description?: string|null} $vacancy
-     * @param array<string, string> $resumeTitles
-     *
-     * @return array{resume_id: string, resume_title: string, source: string, reason: string}
-     */
-    private function assignViaDevAi(
-        string $vacancyExternalId,
-        array $candidates,
-        array $vacancy,
-        array $resumeTitles,
-        array $suitablePeers,
-    ): array {
-        $fallbackId = $suitablePeers[0] ?? $candidates[0] ?? '';
-        $fallbackTitle = trim((string) ($resumeTitles[$fallbackId] ?? ''));
-
-        try {
-            $prompt = $this->renderPrompt($candidates, $vacancy, $resumeTitles);
-            $raw = $this->devAi->chatCompletions($this->model, [
-                ['role' => 'user', 'content' => $prompt],
-            ]);
-            $content = $this->contentFromResponse($raw);
-            $parsed = $this->parseJson($content);
-            $chosen = trim((string) ($parsed['resume_id'] ?? ''));
-            $reason = trim((string) ($parsed['reason'] ?? ''));
-            if ($chosen === '' || !in_array($chosen, $candidates, true)) {
-                throw new DevAiException('assign_resume_id_invalid');
-            }
-            $title = trim((string) ($resumeTitles[$chosen] ?? ''));
-            $this->store->put(
-                $vacancyExternalId,
-                $chosen,
-                $title,
-                'devai',
-                $reason,
-                $candidates,
-                $suitablePeers,
-            );
-
-            return [
-                'resume_id' => $chosen,
-                'resume_title' => $title,
-                'source' => 'devai',
-                'reason' => $reason,
-            ];
-        } catch (\Throwable $e) {
-            // Не роняем fetch: оставляем текущего первого suitable-peer.
-            $this->store->put(
-                $vacancyExternalId,
-                $fallbackId,
-                $fallbackTitle,
-                'first',
-                'DevAI assign failed: ' . $e->getMessage(),
-                $candidates,
-                $suitablePeers,
-            );
-
-            return [
-                'resume_id' => $fallbackId,
-                'resume_title' => $fallbackTitle,
-                'source' => 'first',
-                'reason' => 'DevAI assign failed: ' . $e->getMessage(),
-            ];
-        }
-    }
-
-    /**
-     * @param list<string> $peers
-     * @param array{title?: string, company_name?: string, url?: string, description?: string|null} $vacancy
-     * @param array<string, string> $resumeTitles
-     */
-    private function renderPrompt(array $peers, array $vacancy, array $resumeTitles): string
-    {
-        $template = is_readable($this->promptPath)
-            ? (string) file_get_contents($this->promptPath)
-            : "Выбери resume_id из candidates. JSON: {\"resume_id\":\"\",\"reason\":\"\"}\n{{resumes_block}}\n{{vacancy_title}}";
-
-        $blocks = [];
-        foreach ($peers as $id) {
-            $title = trim((string) ($resumeTitles[$id] ?? ''));
-            $text = $this->resumeText($id);
-            if (mb_strlen($text) > 2500) {
-                $text = mb_substr($text, 0, 2500) . '…';
-            }
-            $blocks[] = "- id: {$id}\n  title: " . ($title !== '' ? $title : $id)
-                . "\n  text:\n" . ($text !== '' ? $text : '(нет текста резюме в кеше)');
-        }
-
-        $desc = trim((string) ($vacancy['description'] ?? ''));
-        if (mb_strlen($desc) > 4000) {
-            $desc = mb_substr($desc, 0, 4000) . '…';
-        }
-
-        return strtr($template, [
-            '{{vacancy_title}}' => trim((string) ($vacancy['title'] ?? '')),
-            '{{vacancy_company}}' => trim((string) ($vacancy['company_name'] ?? '')),
-            '{{vacancy_url}}' => trim((string) ($vacancy['url'] ?? '')),
-            '{{vacancy_description}}' => $desc !== '' ? $desc : '(нет описания)',
-            '{{resumes_block}}' => implode("\n\n", $blocks),
-        ]);
-    }
-
-    private function resumeText(string $resumeId): string
-    {
-        if ($this->cache === null) {
-            return '';
-        }
-        $entry = $this->cache->get('resume_texts');
-        if ($entry === null || !is_array($entry->payload)) {
-            return '';
-        }
-        $items = is_array($entry->payload['items'] ?? null) ? $entry->payload['items'] : [];
-        foreach ($items as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-            $id = trim((string) ($row['external_id'] ?? $row['id'] ?? ''));
-            if ($id !== $resumeId) {
-                continue;
-            }
-
-            return trim((string) ($row['text'] ?? $row['body'] ?? ''));
-        }
-
-        return '';
-    }
-
-    /** @param array<string, mixed> $raw */
-    private function contentFromResponse(array $raw): string
-    {
-        $choices = is_array($raw['choices'] ?? null) ? $raw['choices'] : [];
-        $first = is_array($choices[0] ?? null) ? $choices[0] : [];
-        $message = is_array($first['message'] ?? null) ? $first['message'] : [];
-
-        return trim((string) ($message['content'] ?? ''));
-    }
-
-    /** @return array<string, mixed> */
-    private function parseJson(string $content): array
-    {
-        $content = trim($content);
-        if (preg_match('/\{[\s\S]*\}/', $content, $m) === 1) {
-            $content = $m[0];
-        }
-        try {
-            $decoded = json_decode($content, true, 512, JSON_THROW_ON_ERROR);
-        } catch (\JsonException $e) {
-            throw new DevAiException('assign_json_invalid: ' . $e->getMessage(), 0, $e);
-        }
-        if (!is_array($decoded)) {
-            throw new DevAiException('assign_json_not_object');
-        }
-
-        return $decoded;
     }
 }

@@ -18,8 +18,8 @@
 
 | Script | Что |
 |--|--|
-| `npm run ui` | PHP `:8888` + `vite build --watch` (прокси-браузер) |
-| `npm run ui:hmr` | PHP + Vite `:5173` + файл `public/build/hot` |
+| `npm run ui` | прокси `:8888` → PHP `:18789` + `vite build --watch` |
+| `npm run ui:hmr` | то же + Vite `:5173` + файл `public/build/hot` |
 | `npm run build` | разовая prod-сборка |
 
 `ViteAssets`: если есть `hot` → скрипты с `:5173`; иначе manifest → `<script type="module" src="/build/...">` (нужен module: Vite режет shared-чанки с `import`).

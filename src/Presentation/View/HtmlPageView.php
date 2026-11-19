@@ -553,10 +553,10 @@ final class HtmlPageView implements View
                 : '';
             $scoreOne = $unscoredCount > 0 && $id !== ''
                 ? '<button type="button" class="btn btn-sm btn-secondary js-score-ten" data-resume-id="'
-                    . $this->e($id) . '" title="Отправить '
-                    . $this->e((string) min(10, $unscoredCount))
-                    . ' ещё без оценки в DevAI (норм → отклик, skip → мимо)">'
-                    . 'Оценить ' . $this->e((string) min(10, $unscoredCount)) . '</button>'
+                    . $this->e($id) . '" title="Догон DevAI: до '
+                    . $this->e((string) min(40, $unscoredCount))
+                    . ' без оценки (все suitable-run + owner, не только последний прогон)">'
+                    . 'Оценить ' . $this->e((string) min(40, $unscoredCount)) . '</button>'
                 : '';
             $viewHtml = $downloadedCount > 0 && $id !== ''
                 ? '<a class="btn btn-sm btn-secondary" href="/?page=vacancies&amp;resume='
@@ -586,6 +586,14 @@ final class HtmlPageView implements View
                 . '<a class="btn btn-sm btn-secondary" href="/?busy=vacancies"'
                 . ' title="На каждое резюме: качать новые suitable и сразу оценивать DevAI">'
                 . 'Качать suitable всем</a>'
+                . '<button type="button" class="btn btn-sm '
+                . ($sumUnscored > 0 ? 'btn-primary' : 'btn-secondary')
+                . ' js-score-ten"'
+                . ($sumUnscored === 0 ? ' disabled' : '')
+                . ' title="Догон DevAI: все резюме, неоценённые за 7 дней (suitable-run + owner)">'
+                . 'Оценить оставшиеся'
+                . ($sumUnscored > 0 ? ' ' . $this->e((string) $sumUnscored) : '')
+                . '</button>'
                 . '</div>'
             : '';
         /** @var array{running?: bool, tasks?: list<array<string, mixed>>} $schedule */
@@ -614,8 +622,8 @@ final class HtmlPageView implements View
             . '<span class="is-consider">' . $this->e((string) $sumConsider) . ' рассматриваем</span> · '
             . '<span class="is-wait">' . $this->e((string) $sumUnscored) . ' без оценки</span>.'
             . ($sumUnscored > 0
-                ? ' У резюме с «без оценки» — своя полоска DevAI и кнопка «Оценить».'
-                : ' Зелёные на странице вакансий — решать / «Откликнуться» (Playwright).')
+                ? ' Догон: «Оценить оставшиеся» выше или «Оценить N» у резюме.'
+                : ' Догон не нужен — «Оценить оставшиеся» сверху неактивна. Зелёные на вакансиях — «Откликнуться».')
             . '</p>'
             . '</div>';
 

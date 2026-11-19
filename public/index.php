@@ -409,6 +409,7 @@ if ($page === 'vacancies' && !$wantJson && $busy === '') {
                     $coreScoreOne,
                     $scoringOne,
                     new SyncResumeContext($coreScoreOne, $cache),
+                    new VacancyResumeOwnerStore($cache),
                 ),
             ))->forVacancy($resumeId, $scoreVacancyId, $forceRescore);
             $back = [
@@ -474,14 +475,7 @@ if ($page === 'vacancies' && !$wantJson && $busy === '') {
         $appliedStore = new AppliedByVacancyStore($cache);
         $resumeViewsStore = new ResumeViewsStore($cache);
         $ownerStore = new VacancyResumeOwnerStore($cache);
-        $assignOwner = new AssignVacancyResume(
-            $ownerStore,
-            CurlDevAiClient::fromConfig($config),
-            trim((string) ($config->get('DEVAI_MODEL', 'devai/auto') ?? 'devai/auto')) ?: 'devai/auto',
-            $root . '/config/scoring/prompts/assign_vacancy_resume.txt',
-            $cache,
-            $coreVacPage,
-        );
+        $assignOwner = new AssignVacancyResume($ownerStore, $coreVacPage);
         $vacancyErrorStore = new AppErrorStore($cache);
         $payload = (new VacancyPageController(
             new VacancyPage(
@@ -608,7 +602,9 @@ if ($busy !== '' && !$wantJson) {
 }
 
 if ($wantJson && $job === 'status') {
-    respondJson(readJobStatus($statusFile));
+    $snap = readJobStatus($statusFile);
+    $snap['busy'] = uiJobIsBusy($statusFile);
+    respondJson($snap);
 }
 
 if ($wantJson && $job === 'schedule_status') {
@@ -812,18 +808,49 @@ if ($wantJson && $job === 'score_ten') {
         /** @var ScoringApi $scoring */
         $scoring = LocalDevAiScoring::fromConfig($config, $coreScore, $root);
         $listForScore = new ListForResume($coreScore);
+        $ownersForScore = new VacancyResumeOwnerStore($cache);
         $controller = new VacancyScoreController(
             new ScoreTen(
                 $coreScore,
                 $scoring,
                 new SyncResumeContext($coreScore, $cache),
+                $ownersForScore,
             ),
             new ScoreProgress($listForScore),
         );
         if ($resumeId === '') {
-            respondJson(['ok' => false, 'enqueued' => 0, 'message' => 'Укажите resume.']);
+            // «Оценить оставшиеся» — все актуальные резюме из кеша.
+            $resumeIds = [];
+            $resumesEntry = $cache->get('resumes');
+            $resumesPayload = $resumesEntry !== null && is_array($resumesEntry->payload)
+                ? $resumesEntry->payload
+                : [];
+            $resumeItems = is_array($resumesPayload['items'] ?? null)
+                ? $resumesPayload['items']
+                : (is_array($resumesPayload) ? $resumesPayload : []);
+            foreach ($resumeItems as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                // Кеш resumes с HH: external_id (не id / resume_id).
+                $rid = trim((string) (
+                    $row['external_id'] ?? $row['id'] ?? $row['resume_id'] ?? ''
+                ));
+                if ($rid !== '') {
+                    $resumeIds[] = $rid;
+                }
+            }
+            if ($resumeIds === []) {
+                respondJson([
+                    'ok' => false,
+                    'enqueued' => 0,
+                    'message' => 'Нет резюме в кеше — сначала «Обновить» / load.',
+                ]);
+            }
+            $result = $controller->forAllResumes($resumeIds, 40);
+            respondJson($result);
         }
-        $result = $controller->forResume($resumeId, 10);
+        $result = $controller->forResume($resumeId, 40);
         $result['progress'] = $controller->progressForResume($resumeId);
         respondJson($result);
     } catch (Throwable $e) {
@@ -843,6 +870,7 @@ if ($wantJson && $job === 'score_one') {
                 $coreScoreOneJson,
                 LocalDevAiScoring::fromConfig($config, $coreScoreOneJson, $root),
                 new SyncResumeContext($coreScoreOneJson, $cache),
+                new VacancyResumeOwnerStore($cache),
             ),
         );
         respondJson($controller->forVacancy($resumeId, $vacancyId, $force));
@@ -911,6 +939,7 @@ if ($wantJson && $job === 'score_progress') {
                 $coreProgress,
                 LocalDevAiScoring::fromConfig($config, $coreProgress, $root),
                 new SyncResumeContext($coreProgress, $cache),
+                new VacancyResumeOwnerStore($cache),
             ),
             new ScoreProgress(new ListForResume($coreProgress)),
         );
@@ -1007,15 +1036,41 @@ $dailyProgress = [
     'persisted' => false,
     'from_db' => false,
 ];
-try {
-    /** @var CoreApi $coreForVacancies */
-    $coreForVacancies = CurlCoreClient::fromConfig($config);
-    $vacanciesByResume = (new VacancyQueryController(new ListForResume($coreForVacancies)))->summaryByResume();
-    $dailyProgress = (new ProgressController(
-        new SyncDailyProgress($coreForVacancies, new CountTodayApplies($coreForVacancies)),
-    ))->today($vacanciesByResume);
-} catch (Throwable) {
-    $vacanciesByResume = [];
+// Короткий кеш сводки: php -S однопоточный, повторный F5 не должен снова долбить Core 8–12 с.
+$homeSummaryTtl = 20;
+$homeSummaryKey = 'ui_home_summary';
+$homeSummaryHit = false;
+$homeSummaryEntry = $cache->get($homeSummaryKey);
+if (
+    $homeSummaryEntry !== null
+    && is_array($homeSummaryEntry->payload)
+    && (time() - $homeSummaryEntry->savedAt) < $homeSummaryTtl
+) {
+    $cachedVacancies = $homeSummaryEntry->payload['vacancies_by_resume'] ?? null;
+    $cachedProgress = $homeSummaryEntry->payload['daily_progress'] ?? null;
+    if (is_array($cachedVacancies)) {
+        $vacanciesByResume = $cachedVacancies;
+        $homeSummaryHit = true;
+    }
+    if (is_array($cachedProgress)) {
+        $dailyProgress = $cachedProgress;
+    }
+}
+if (!$homeSummaryHit) {
+    try {
+        /** @var CoreApi $coreForVacancies */
+        $coreForVacancies = CurlCoreClient::fromConfig($config);
+        $vacanciesByResume = (new VacancyQueryController(new ListForResume($coreForVacancies)))->summaryByResume();
+        $dailyProgress = (new ProgressController(
+            new SyncDailyProgress($coreForVacancies, new CountTodayApplies($coreForVacancies)),
+        ))->today($vacanciesByResume);
+        $cache->set($homeSummaryKey, [
+            'vacancies_by_resume' => $vacanciesByResume,
+            'daily_progress' => $dailyProgress,
+        ]);
+    } catch (Throwable) {
+        $vacanciesByResume = [];
+    }
 }
 
 $flash = isset($_GET['flash']) ? (string) $_GET['flash'] : null;

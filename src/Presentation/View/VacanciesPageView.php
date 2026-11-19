@@ -595,7 +595,15 @@ final class VacanciesPageView implements View
         }
 
         $meta = array_values(array_filter([$company, $salary, $area], static fn (string $v): bool => $v !== ''));
+        $coreId = trim((string) ($item['core_id'] ?? ''));
+        $ownerResumeId = trim((string) ($item['owner_resume_id'] ?? ''));
+        $ownerResumeTitle = trim((string) ($item['owner_resume_title'] ?? ''));
+        $ownerReason = trim((string) ($item['owner_reason'] ?? ''));
+        $ownerSource = trim((string) ($item['owner_source'] ?? ''));
         $dates = [];
+        if ($externalId !== '') {
+            $dates[] = 'ID: ' . $externalId;
+        }
         $discovered = RuDate::dateTime($item['discovered_at'] ?? $item['first_seen_at'] ?? $item['created_at'] ?? null);
         $assessed = RuDate::dateTime($item['assessed_at'] ?? null);
         $viewedDate = RuDate::dateTime($item['resume_viewed_at'] ?? null);
@@ -608,9 +616,28 @@ final class VacanciesPageView implements View
         if ($viewedDate !== '') {
             $dates[] = 'Смотрели резюме: ' . $viewedDate;
         }
-        $datesHtml = $dates !== []
-            ? '<p class="vacancy-dates">' . $this->e(implode(' · ', $dates)) . '</p>'
-            : '';
+        $ownerBits = [];
+        $ownerLabel = $this->resumeShortLabel($ownerResumeId, $ownerResumeTitle);
+        if ($ownerLabel !== '') {
+            $ownerBits[] = 'Резюме: ' . $ownerLabel;
+        }
+        if ($ownerReason !== '') {
+            $ownerBits[] = $ownerReason;
+        }
+        if (
+            $ownerSource !== ''
+            && ($ownerReason === '' || !str_contains(mb_strtolower($ownerReason), mb_strtolower($ownerSource)))
+        ) {
+            $ownerBits[] = $ownerSource;
+        }
+        $datesHtml = '';
+        if ($dates !== [] || $ownerBits !== []) {
+            $datesHtml = '<p class="vacancy-dates">'
+                . ($dates !== [] ? $this->e(implode(' · ', $dates)) : '')
+                . ($dates !== [] && $ownerBits !== [] ? '<br>' : '')
+                . ($ownerBits !== [] ? $this->e(implode(' · ', $ownerBits)) : '')
+                . '</p>';
+        }
         $verdictHtml = '';
         $badge = $this->verdictBadge($verdict);
         if ($badge !== '') {
@@ -631,7 +658,6 @@ final class VacanciesPageView implements View
             $skillsHtml .= '</ul></div>';
         }
 
-        $coreId = trim((string) ($item['core_id'] ?? ''));
         $toneNow = $this->tone($verdict);
         $isDup = !empty($item['is_duplicate']);
         $needsScore = $toneNow === 'pending' && $coreId !== '';
@@ -643,9 +669,6 @@ final class VacanciesPageView implements View
         $chatStatus = trim((string) ($item['chat_status_label'] ?? ''));
         $viewedAt = RuDate::dateTime($item['resume_viewed_at'] ?? null);
         $canApply = array_key_exists('can_apply', $item) ? !empty($item['can_apply']) : !$isDup;
-        $ownerResumeId = trim((string) ($item['owner_resume_id'] ?? ''));
-        $ownerResumeTitle = trim((string) ($item['owner_resume_title'] ?? ''));
-        $ownerReason = trim((string) ($item['owner_reason'] ?? ''));
         $companyRejected = !empty($item['company_rejected']);
         $companyRejectHint = trim((string) ($item['company_rejection_hint'] ?? ''));
         $companyExcluded = !empty($item['company_excluded']);
@@ -881,6 +904,35 @@ final class VacanciesPageView implements View
 
         return '<p class="flash ' . $cls . ' js-flash" role="status">'
             . nl2br($this->e($flash), false) . '</p>';
+    }
+
+    /** Короткие ярлыки как ListPage::RESUME_LABELS. */
+    private function resumeShortLabel(string $resumeId, string $title = ''): string
+    {
+        static $labels = [
+            'd511f1d1ff1145b22e0039ed1f4e6946685076' => 'TPM',
+            'f3e5e5f7ff0f50d3e50039ed1f4436664d7338' => 'PM',
+            'd7cf4e9eff11521f2e0039ed1f504a67754631' => 'PHP',
+        ];
+        $resumeId = trim($resumeId);
+        if ($resumeId !== '' && isset($labels[$resumeId])) {
+            return $labels[$resumeId];
+        }
+        $t = mb_strtolower(trim($title), 'UTF-8');
+        if ($t === '') {
+            return '';
+        }
+        if (preg_match('/bitrix|битрикс|\bphp\b/u', $t) === 1) {
+            return 'PHP';
+        }
+        if (preg_match('/delivery|technical\s*project|\btpm\b/u', $t) === 1) {
+            return 'TPM';
+        }
+        if (preg_match('/project\s*manager|руководитель\s+(?:it|ит)?-?проект/u', $t) === 1) {
+            return 'PM';
+        }
+
+        return $title;
     }
 
     private function tone(string $verdict): string

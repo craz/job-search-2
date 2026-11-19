@@ -14,10 +14,11 @@
     "hh:cache:vacancies": "php bin/hh.php vacancies",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "vite build",
-    "ui:php": "php -S 127.0.0.1:8888 -t public",
+    "ui:php-backend": "php -S 127.0.0.1:18789 -t public",
+    "ui:proxy": "node scripts/ui_dev_server.mjs",
     "ui:watch": "vite build --watch",
-    "ui:hmr": "concurrently -k -n php,vite -c blue,green \"npm run ui:php\" \"vite\"",
-    "ui": "concurrently -k -n php,watch -c blue,green \"npm run ui:php\" \"npm run ui:watch\""
+    "ui:hmr": "concurrently -k -n php,proxy,vite -c blue,magenta,green \"npm run ui:php-backend\" \"npm run ui:proxy\" \"vite\"",
+    "ui": "concurrently -k -n php,proxy,watch -c blue,magenta,green \"npm run ui:php-backend\" \"npm run ui:proxy\" \"npm run ui:watch\""
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

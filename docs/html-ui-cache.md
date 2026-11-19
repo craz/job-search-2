@@ -11,7 +11,9 @@ npm run ui
 # открыть http://127.0.0.1:8888/  (не localhost, не :8890)
 ```
 
-PHP отдаёт `public/`; JS — same-origin `/build` (см. [frontend-vite](frontend-vite.md)).
+Снаружи **`:8888`** — Node-прокси (`scripts/ui_dev_server.mjs`): `/build/*` и CSS с диска; HTML/API → `php -S :18789`. Так LiveReload не клинит вместе с тяжёлой главной (однопоточный PHP).
+
+JS — same-origin `/build` (см. [frontend-vite](frontend-vite.md)).
 
 ## Ключи кеша (`data/cache/`)
 
@@ -21,6 +23,7 @@ PHP отдаёт `public/`; JS — same-origin `/build` (см. [frontend-vite](f
 | `city` | текущий город сессии |
 | `resumes` | список резюме |
 | `resume_texts` | тексты TXT |
+| `ui_home_summary` | сводка главной (vacancies + daily_progress), TTL ~20 с |
 | `job.status.json` | состояние фонового job |
 
 Вакансии хранятся в **Core/Postgres** (SearchRun `resume_suitable`), не в FileCache — см. [vacancies-fetch.md](vacancies-fetch.md).
@@ -45,7 +48,7 @@ JSON: `/?job=refresh|set_city|vacancies|apply|status&format=json` (см. `JobApi
 
 ## Ловушка `php -S`
 
-Один поток: пока HTTP-запрос крутит Playwright, CSS/JS не отдаются → тёмный «пустой» экран. Поэтому job только в `bin/`, UI только читает кеш/статус.
+Один поток на `:18789`: пока PHP крутит Core/тяжёлую страницу, другие PHP-запросы ждут. Статику отдаёт прокси на `:8888`, не PHP. Playwright/долгие job — только в `bin/`, не в HTTP UI. Core: connect 3 с / total 15 с, чтобы не висеть вечно.
 
 ## Фоновые скрипты
 

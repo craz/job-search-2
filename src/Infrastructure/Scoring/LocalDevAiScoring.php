@@ -8,6 +8,8 @@ use JobSearch\Application\Scoring\CommercialPrimaryGuard;
 use JobSearch\Application\Scoring\DevAiVerdictParser;
 use JobSearch\Application\Scoring\ScorePromptRenderer;
 use JobSearch\Application\Scoring\ScoringProfile;
+use JobSearch\Application\Vacancy\VacancyOwnerTitleRules;
+use JobSearch\Application\Vacancy\VacancyResumeOwnerStore;
 use JobSearch\Domain\Core\CoreApi;
 use JobSearch\Domain\Core\CoreException;
 use JobSearch\Domain\DevAi\DevAi;
@@ -15,16 +17,28 @@ use JobSearch\Domain\DevAi\DevAiException;
 use JobSearch\Domain\Scoring\ScoringApi;
 use JobSearch\Domain\Scoring\ScoringException;
 use JobSearch\Domain\Vacancy\HhBotWall;
+use JobSearch\Infrastructure\Cache\Cache;
+use JobSearch\Infrastructure\Cache\FileCache;
 use JobSearch\Infrastructure\Config\Config;
 use JobSearch\Infrastructure\DevAi\CurlDevAiClient;
 
 /**
- * Локальный scoring: pre-gate EXCLUDE → DevAI prompt → Core assessment.
- * Заменяет Python SCORING_API_URL в потоке ScoreTen.
+ * Локальный scoring: pre-gate EXCLUDE → DevAI prompt → Core assessment
+ * + финальный owner_resume_id в vacancy_resume_owner (source=score).
  */
 final class LocalDevAiScoring implements ScoringApi
 {
     public const SOURCE = 'job-search-2-devai';
+
+    /**
+     * Активные резюме (id → title для title-rules / промпта, если кеш resumes пуст).
+     * Короткие ярлыки TPM/PM/PHP — в ListPage::RESUME_LABELS.
+     */
+    private const ACTIVE_RESUME_IDS = [
+        'd511f1d1ff1145b22e0039ed1f4e6946685076' => 'Technical Project Manager / Delivery Manager',
+        'f3e5e5f7ff0f50d3e50039ed1f4436664d7338' => 'Project Manager / Руководитель IT-проектов',
+        'd7cf4e9eff11521f2e0039ed1f504a67754631' => 'PHP-разработчик / 1С-Битрикс / Bitrix24',
+    ];
 
     public function __construct(
         private readonly CoreApi $core,
@@ -35,6 +49,8 @@ final class LocalDevAiScoring implements ScoringApi
         private readonly CommercialPrimaryGuard $commercialGuard,
         private readonly DevAiVerdictParser $parser,
         private readonly string $model,
+        private readonly ?VacancyResumeOwnerStore $owners = null,
+        private readonly ?Cache $cache = null,
     ) {}
 
     public static function fromConfig(
@@ -45,6 +61,7 @@ final class LocalDevAiScoring implements ScoringApi
     ): self {
         $profile = ScoringProfile::load($projectRoot);
         $model = trim((string) ($config->get('DEVAI_MODEL', 'devai/auto') ?? 'devai/auto'));
+        $cache = new FileCache(rtrim($projectRoot, '/') . '/data/cache');
 
         return new self(
             $core,
@@ -55,6 +72,8 @@ final class LocalDevAiScoring implements ScoringApi
             new CommercialPrimaryGuard(),
             new DevAiVerdictParser(),
             $model !== '' ? $model : 'devai/auto',
+            new VacancyResumeOwnerStore($cache),
+            $cache,
         );
     }
 
@@ -90,7 +109,12 @@ final class LocalDevAiScoring implements ScoringApi
                 }
                 $outcome = $this->scoreOne($vacancyId, $force);
                 $enqueued++;
-                $results[] = ['vacancy_id' => $vacancyId, 'status' => 'scored', 'verdict' => $outcome['verdict']];
+                $results[] = [
+                    'vacancy_id' => $vacancyId,
+                    'status' => 'scored',
+                    'verdict' => $outcome['verdict'],
+                    'owner_resume_id' => $outcome['owner_resume_id'] ?? '',
+                ];
             } catch (ScoringException $e) {
                 $failed++;
                 $skipped[] = ['vacancy_id' => $vacancyId, 'code' => 'score_failed', 'message' => $e->getMessage()];
@@ -111,7 +135,14 @@ final class LocalDevAiScoring implements ScoringApi
     }
 
     /**
-     * @return array{verdict: string, reason: string, action: string, decisive_factors: list<string>}
+     * @return array{
+     *   verdict: string,
+     *   reason: string,
+     *   action: string,
+     *   decisive_factors: list<string>,
+     *   owner_resume_id?: string,
+     *   owner_reason?: string
+     * }
      */
     private function scoreOne(string $vacancyId, bool $force = false): array
     {
@@ -132,6 +163,8 @@ final class LocalDevAiScoring implements ScoringApi
                 'reason' => 'Страница HH «не робот»/капча вместо вакансии — в базу попал мусор, не оценивать.',
                 'action' => 'Пропустить вакансию',
                 'decisive_factors' => ['FETCH.hh_bot_wall'],
+                'owner_resume_id' => '',
+                'owner_reason' => '',
             ];
             $this->writeAssessment($vacancyId, $vacancy, $parsed, 'pregate', $force);
 
@@ -149,6 +182,8 @@ final class LocalDevAiScoring implements ScoringApi
                     'reason' => $hit->reason,
                     'action' => 'Пропустить вакансию',
                     'decisive_factors' => [$factor],
+                    'owner_resume_id' => '',
+                    'owner_reason' => '',
                 ];
                 $this->writeAssessment($vacancyId, $vacancy, $parsed, 'pregate', $force);
 
@@ -156,9 +191,10 @@ final class LocalDevAiScoring implements ScoringApi
             }
         }
 
+        $ownerCandidates = $this->ownerCandidates();
         $resumeContext = $this->resumeContext();
         try {
-            $prompt = $this->prompts->render($vacancy, $resumeContext);
+            $prompt = $this->prompts->render($vacancy, $resumeContext, $ownerCandidates);
             $chat = $this->devAi->chatCompletions(
                 $this->model,
                 [
@@ -168,6 +204,8 @@ final class LocalDevAiScoring implements ScoringApi
             );
             $parsed = $this->parser->parse($chat);
             $parsed = $this->commercialGuard->apply($parsed, $material);
+            $parsed['owner_resume_id'] = trim((string) ($parsed['owner_resume_id'] ?? ''));
+            $parsed['owner_reason'] = trim((string) ($parsed['owner_reason'] ?? ''));
         } catch (DevAiException $e) {
             throw new ScoringException('DevAI: ' . $e->getMessage(), 0, $e);
         } catch (\Throwable $e) {
@@ -175,13 +213,14 @@ final class LocalDevAiScoring implements ScoringApi
         }
 
         $this->writeAssessment($vacancyId, $vacancy, $parsed, 'devai', $force);
+        $this->writeOwnerFromScore($vacancy, $parsed, $ownerCandidates);
 
         return $parsed;
     }
 
     /**
      * @param array<string, mixed> $vacancy
-     * @param array{verdict: string, reason: string, action: string, decisive_factors: list<string>} $parsed
+     * @param array{verdict: string, reason: string, action: string, decisive_factors: list<string>, owner_resume_id?: string, owner_reason?: string} $parsed
      */
     private function writeAssessment(
         string $vacancyId,
@@ -216,6 +255,8 @@ final class LocalDevAiScoring implements ScoringApi
                 'deterministic_signals' => $parsed['decisive_factors'],
                 'backend' => self::SOURCE,
                 'via' => $via,
+                'owner_resume_id' => trim((string) ($parsed['owner_resume_id'] ?? '')),
+                'owner_reason' => trim((string) ($parsed['owner_reason'] ?? '')),
             ],
         ];
 
@@ -224,6 +265,106 @@ final class LocalDevAiScoring implements ScoringApi
         } catch (CoreException $e) {
             throw new ScoringException('Core createAssessment: ' . $e->getMessage(), 0, $e);
         }
+    }
+
+    /**
+     * Финальный owner после DevAI score (не трогает manual; pregate не вызывает).
+     *
+     * @param array<string, mixed> $vacancy
+     * @param array{owner_resume_id?: string, owner_reason?: string} $parsed
+     * @param array<string, string> $ownerCandidates
+     */
+    private function writeOwnerFromScore(array $vacancy, array $parsed, array $ownerCandidates): void
+    {
+        if ($this->owners === null || $ownerCandidates === []) {
+            return;
+        }
+        $hhId = trim((string) ($vacancy['external_id'] ?? ''));
+        if ($hhId === '') {
+            return;
+        }
+
+        $existing = $this->owners->get($hhId);
+        if (is_array($existing) && ($existing['source'] ?? '') === 'manual') {
+            return;
+        }
+
+        $chosen = trim((string) ($parsed['owner_resume_id'] ?? ''));
+        $reason = trim((string) ($parsed['owner_reason'] ?? ''));
+        if ($chosen === '' || !isset($ownerCandidates[$chosen])) {
+            $ruled = (new VacancyOwnerTitleRules())->pick(
+                [
+                    'title' => (string) ($vacancy['title'] ?? ''),
+                    'description' => (string) ($vacancy['description'] ?? ''),
+                ],
+                array_keys($ownerCandidates),
+                $ownerCandidates,
+            );
+            if ($ruled !== null) {
+                $chosen = $ruled['resume_id'];
+                $reason = $ruled['reason'] !== ''
+                    ? $ruled['reason']
+                    : 'Title-rules после score (модель не дала owner).';
+            } else {
+                return;
+            }
+        }
+        if ($reason === '') {
+            $reason = 'Owner из оценки DevAI.';
+        }
+
+        $peers = is_array($existing) && is_array($existing['suitable_peers'] ?? null)
+            ? $existing['suitable_peers']
+            : [];
+        $peers = array_values(array_filter(
+            array_map(static fn ($p): string => trim((string) $p), $peers),
+            static fn (string $p): bool => $p !== '',
+        ));
+        if ($peers === []) {
+            $peers = [$chosen];
+        } elseif (!in_array($chosen, $peers, true)) {
+            $peers[] = $chosen;
+        }
+
+        $this->owners->put(
+            $hhId,
+            $chosen,
+            trim((string) ($ownerCandidates[$chosen] ?? '')),
+            'score',
+            $reason,
+            array_keys($ownerCandidates),
+            $peers,
+        );
+    }
+
+    /** @return array<string, string> resume_id → title */
+    private function ownerCandidates(): array
+    {
+        $out = [];
+        if ($this->cache !== null) {
+            $entry = $this->cache->get('resumes');
+            $items = is_array($entry?->payload['items'] ?? null) ? $entry->payload['items'] : [];
+            foreach ($items as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $id = trim((string) ($row['external_id'] ?? $row['id'] ?? ''));
+                if ($id === '' || !isset(self::ACTIVE_RESUME_IDS[$id])) {
+                    continue;
+                }
+                $title = trim((string) ($row['title'] ?? ''));
+                $out[$id] = $title !== '' ? $title : self::ACTIVE_RESUME_IDS[$id];
+            }
+        }
+        if ($out !== []) {
+            return $out;
+        }
+        // Кеш пуст — всё равно отдаём известные id, чтобы модель могла выбрать.
+        foreach (self::ACTIVE_RESUME_IDS as $id => $label) {
+            $out[$id] = $label;
+        }
+
+        return $out;
     }
 
     /** @return array<string, mixed> */

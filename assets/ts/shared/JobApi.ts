@@ -22,9 +22,12 @@ export type JobStartResponse = {
 export type JobStatusResponse = {
   state?: string;
   step?: string;
+  job?: string;
   ok?: boolean | null;
   message?: string;
   updated_at?: number;
+  /** true = uiJobIsBusy (живой running), не просто state в файле */
+  busy?: boolean;
 };
 
 /**

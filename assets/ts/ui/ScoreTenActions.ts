@@ -61,6 +61,14 @@ export class ScoreTenActions {
         this.progress.watch(resume);
       }
 
+      if (ok && resume === '') {
+        // «Оценить оставшиеся» — перезагрузка, чтобы обновить счётчики.
+        window.setTimeout(() => {
+          window.location.reload();
+        }, 600);
+        return;
+      }
+
       if (ok && resume !== '') {
         button.remove();
         return;

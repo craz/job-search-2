@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace JobSearch\Application\Scoring;
 
 /**
- * Достаёт verdict JSON из ответа chat completions.
+ * Достаёт verdict JSON из ответа chat completions (в т.ч. owner_resume_id).
  */
 final class DevAiVerdictParser
 {
@@ -15,7 +15,9 @@ final class DevAiVerdictParser
      *   verdict: string,
      *   reason: string,
      *   action: string,
-     *   decisive_factors: list<string>
+     *   decisive_factors: list<string>,
+     *   owner_resume_id: string,
+     *   owner_reason: string
      * }
      */
     public function parse(array $chatResponse): array
@@ -72,6 +74,8 @@ final class DevAiVerdictParser
             'reason' => $reason !== '' ? $reason : 'Нет reason от модели.',
             'action' => $action,
             'decisive_factors' => $factors,
+            'owner_resume_id' => trim((string) ($data['owner_resume_id'] ?? '')),
+            'owner_reason' => trim((string) ($data['owner_reason'] ?? '')),
         ];
     }
 

@@ -17,6 +17,8 @@ CACHE = ROOT / "data" / "cache"
 JOB_PATH = CACHE / "job.status.json"
 SCHEDULE_PATH = CACHE / "schedule_state.json"
 APPLIED_PATH = CACHE / "applied_by_vacancy.json"
+APP_ERRORS_PATH = CACHE / "app_errors.json"
+REJECTIONS_PATH = CACHE / "chat_rejections.json"
 SUITABLE_STATS_PATH = CACHE / "suitable_run_stats.json"
 OWNER_PATH = CACHE / "vacancy_resume_owner.json"
 RESUMES_PATH = CACHE / "resumes.json"
@@ -468,6 +470,9 @@ def applied_counts() -> tuple[int, int, str | None]:
     for row in payload.values():
         if not isinstance(row, dict):
             continue
+        # Только кнопка apply — chatik (импорт чатов) не считаем откликом.
+        if str(row.get("source") or "").strip() != "apply":
+            continue
         total += 1
         ts = str(row.get("applied_at") or "").strip()
         if not ts:
@@ -542,6 +547,8 @@ def sync_suitable_run_stats() -> int:
                     ts_literal(row.get("finished_at")),
                     sql_literal(str(row.get("status") or "")),
                     sql_literal(int(row.get("serp_cards") or 0)),
+                    "NULL" if row.get("hh_total") is None else sql_literal(int(row.get("hh_total") or 0)),
+                    sql_literal(int(row.get("in_db") or 0)),
                     sql_literal(int(row.get("skipped_known") or 0)),
                     sql_literal(int(row.get("skipped_old") or 0)),
                     sql_literal(int(row.get("ingested") or 0)),
@@ -558,6 +565,13 @@ def sync_suitable_run_stats() -> int:
     if not values:
         return 0
     # Пачками, чтобы не раздувать один INSERT.
+    run_psql(
+        """
+ALTER TABLE ui_suitable_run_stats
+  ADD COLUMN IF NOT EXISTS hh_total integer,
+  ADD COLUMN IF NOT EXISTS in_db integer NOT NULL DEFAULT 0;
+"""
+    )
     n = 0
     for i in range(0, len(values), 80):
         chunk = values[i : i + 80]
@@ -565,7 +579,7 @@ def sync_suitable_run_stats() -> int:
 INSERT INTO ui_suitable_run_stats AS t (
   search_run_id, resume_id, resume_title, resume_label,
   started_at, finished_at, status,
-  serp_cards, skipped_known, skipped_old, ingested,
+  serp_cards, hh_total, in_db, skipped_known, skipped_old, ingested,
   created_count, updated_count, unchanged_count, failed, scored, synced_at
 ) VALUES
 {',\n'.join(chunk)}
@@ -577,6 +591,8 @@ ON CONFLICT (search_run_id) DO UPDATE SET
   finished_at = EXCLUDED.finished_at,
   status = EXCLUDED.status,
   serp_cards = EXCLUDED.serp_cards,
+  hh_total = EXCLUDED.hh_total,
+  in_db = EXCLUDED.in_db,
   skipped_known = EXCLUDED.skipped_known,
   skipped_old = EXCLUDED.skipped_old,
   ingested = EXCLUDED.ingested,
@@ -637,6 +653,196 @@ ON CONFLICT (vacancy_external_id) DO UPDATE SET
   resume_label = EXCLUDED.resume_label,
   applied_at = EXCLUDED.applied_at,
   source = EXCLUDED.source,
+  synced_at = EXCLUDED.synced_at;
+"""
+        run_psql(sql)
+        n += len(chunk)
+    return n
+
+
+def live_resume_ids() -> set[str]:
+    """Актуальные resume_id с HH (кеш resumes); fallback — RESUME_LABELS."""
+    titles: set[str] = set()
+    wrap = read_json(RESUMES_PATH)
+    payload = wrap.get("payload") if isinstance(wrap.get("payload"), dict) else {}
+    items = payload.get("items") if isinstance(payload, dict) else []
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            rid = str(item.get("external_id") or "").strip()
+            if rid:
+                titles.add(rid)
+    if titles:
+        return titles
+    return set(RESUME_LABELS)
+
+
+def ensure_rejection_events_table() -> None:
+    run_psql(
+        """
+CREATE TABLE IF NOT EXISTS ui_rejection_events (
+  vacancy_external_id text PRIMARY KEY,
+  chat_id text NOT NULL DEFAULT '',
+  resume_id text NOT NULL DEFAULT '',
+  resume_label text NOT NULL DEFAULT '',
+  resume_title text NOT NULL DEFAULT '',
+  company_name text NOT NULL DEFAULT '',
+  rejected_at timestamptz NOT NULL,
+  synced_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ui_rejection_events_rejected_at_idx
+  ON ui_rejection_events (rejected_at DESC);
+CREATE INDEX IF NOT EXISTS ui_rejection_events_resume_idx
+  ON ui_rejection_events (resume_id, rejected_at DESC);
+"""
+    )
+
+
+def sync_rejection_events() -> int:
+    """Архив chat_rejections → Postgres. Без даты и мёртвые резюме пропускаем."""
+    ensure_rejection_events_table()
+    wrap = read_json(REJECTIONS_PATH)
+    payload = wrap.get("payload") if isinstance(wrap.get("payload"), dict) else wrap
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not items:
+        return 0
+    known = live_resume_ids()
+    values: list[str] = []
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        vac = str(row.get("vacancy_external_id") or "").strip()
+        if vac == "":
+            continue
+        ts = str(row.get("last_message_at") or row.get("last_activity_at") or "").strip()
+        if not ts:
+            continue
+        rid = str(row.get("resume_external_id") or row.get("resume_id") or "").strip()
+        if rid == "" or rid not in known:
+            continue
+        values.append(
+            "("
+            + ", ".join(
+                [
+                    sql_literal(vac),
+                    sql_literal(str(row.get("chat_id") or "")),
+                    sql_literal(rid),
+                    sql_literal(resume_label(rid)),
+                    sql_literal(str(row.get("resume_title") or "")),
+                    sql_literal(str(row.get("company_name") or "")[:500]),
+                    ts_literal(ts) + "::timestamptz",
+                    "now()",
+                ]
+            )
+            + ")"
+        )
+    if not values:
+        return 0
+    n = 0
+    for i in range(0, len(values), 100):
+        chunk = values[i : i + 100]
+        sql = f"""
+INSERT INTO ui_rejection_events AS t (
+  vacancy_external_id, chat_id, resume_id, resume_label, resume_title,
+  company_name, rejected_at, synced_at
+) VALUES
+{',\n'.join(chunk)}
+ON CONFLICT (vacancy_external_id) DO UPDATE SET
+  chat_id = EXCLUDED.chat_id,
+  resume_id = EXCLUDED.resume_id,
+  resume_label = EXCLUDED.resume_label,
+  resume_title = EXCLUDED.resume_title,
+  company_name = EXCLUDED.company_name,
+  rejected_at = EXCLUDED.rejected_at,
+  synced_at = EXCLUDED.synced_at;
+"""
+        run_psql(sql)
+        n += len(chunk)
+    # Убрать отказы по удалённым резюме (SM/HIT и т.п.).
+    keep = ", ".join(sql_literal(rid) for rid in sorted(known))
+    if keep:
+        run_psql(f"DELETE FROM ui_rejection_events WHERE resume_id NOT IN ({keep});")
+    return n
+
+
+def ensure_apply_fail_table() -> None:
+    run_psql(
+        """
+CREATE TABLE IF NOT EXISTS ui_apply_fail_events (
+  id text PRIMARY KEY,
+  vacancy_external_id text NOT NULL,
+  resume_id text NOT NULL DEFAULT '',
+  resume_label text NOT NULL DEFAULT '',
+  kind text NOT NULL,
+  message text NOT NULL DEFAULT '',
+  failed_at timestamptz NOT NULL,
+  synced_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ui_apply_fail_events_failed_at_idx
+  ON ui_apply_fail_events (failed_at);
+"""
+    )
+
+
+def sync_apply_fail_events() -> int:
+    """Сбои/скип TG из app_errors — чтобы на графике откликов было видно «15 попыток → 14+1»."""
+    ensure_apply_fail_table()
+    wrap = read_json(APP_ERRORS_PATH)
+    payload = wrap.get("payload") if isinstance(wrap.get("payload"), dict) else wrap
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not items:
+        return 0
+    values: list[str] = []
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        eid = str(row.get("id") or "").strip()
+        vac = str(row.get("vacancy_id") or "").strip()
+        ts = str(row.get("at") or "").strip()
+        msg = str(row.get("message") or "").strip()
+        if eid == "" or vac == "" or ts == "" or msg == "":
+            continue
+        # Только apply-поток (не прочие UI-ошибки).
+        src = str(row.get("source") or "").strip().lower()
+        if src not in ("", "apply", "apply_consider", "apply_errors"):
+            continue
+        rid = str(row.get("resume_id") or "").strip()
+        skipped = str(row.get("skipped_at") or "").strip()
+        kind = "скип TG" if skipped else "не ушло"
+        values.append(
+            "("
+            + ", ".join(
+                [
+                    sql_literal(eid),
+                    sql_literal(vac),
+                    sql_literal(rid),
+                    sql_literal(resume_label(rid)),
+                    sql_literal(kind),
+                    sql_literal(msg[:300]),
+                    ts_literal(ts) + "::timestamptz",
+                    "now()",
+                ]
+            )
+            + ")"
+        )
+    if not values:
+        return 0
+    n = 0
+    for i in range(0, len(values), 100):
+        chunk = values[i : i + 100]
+        sql = f"""
+INSERT INTO ui_apply_fail_events AS t (
+  id, vacancy_external_id, resume_id, resume_label, kind, message, failed_at, synced_at
+) VALUES
+{',\n'.join(chunk)}
+ON CONFLICT (id) DO UPDATE SET
+  vacancy_external_id = EXCLUDED.vacancy_external_id,
+  resume_id = EXCLUDED.resume_id,
+  resume_label = EXCLUDED.resume_label,
+  kind = EXCLUDED.kind,
+  message = EXCLUDED.message,
+  failed_at = EXCLUDED.failed_at,
   synced_at = EXCLUDED.synced_at;
 """
         run_psql(sql)
@@ -736,6 +942,8 @@ def sync_resume_stats() -> int:
             rid = str(row.get("resume_external_id") or row.get("resume_id") or "").strip()
             if rid == "":
                 continue
+            if str(row.get("source") or "").strip() != "apply":
+                continue
             applied_total[rid] = applied_total.get(rid, 0) + 1
             ts = str(row.get("applied_at") or "").strip()
             if not ts:
@@ -748,9 +956,10 @@ def sync_resume_stats() -> int:
             if local_day == day:
                 applied_today[rid] = applied_today.get(rid, 0) + 1
 
-    resume_ids = sorted(
-        set(titles) | set(owned) | set(applied_total) | set(RESUME_LABELS),
-    )
+    # Только актуальные резюме с HH (кеш resumes) — без SM/HIT и прочих мёртвых id.
+    resume_ids = sorted(set(titles))
+    if not resume_ids:
+        resume_ids = sorted(RESUME_LABELS)
     if not resume_ids:
         return 0
     values: list[str] = []
@@ -797,6 +1006,8 @@ ON CONFLICT (resume_id) DO UPDATE SET
   synced_at = EXCLUDED.synced_at;
 """
     run_psql(sql)
+    keep = ", ".join(sql_literal(rid) for rid in resume_ids)
+    run_psql(f"DELETE FROM ui_resume_stats WHERE resume_id NOT IN ({keep});")
     return len(values)
 
 
@@ -813,6 +1024,8 @@ def sync_once() -> int:
     if now - _last_stats_at >= _STATS_EVERY_SEC:
         sync_suitable_run_stats()
         sync_applied_events()
+        sync_apply_fail_events()
+        sync_rejection_events()
         sync_vacancy_owner()
         sync_resume_stats()
         _last_stats_at = now

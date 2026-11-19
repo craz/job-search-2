@@ -1,12 +1,23 @@
-Ты оцениваешь вакансию для кандидата (Technical Project Manager / Delivery / Scrum delivery / PM IT).
+Ты оцениваешь вакансию для кандидата и сразу выбираешь, к какому его резюме её привязать (один owner).
 
 Верни ТОЛЬКО валидный JSON без markdown:
 {
   "verdict": "apply" | "maybe" | "skip",
   "reason": "кратко по-русски, 1–2 предложения",
   "action": "кратко по-русски что делать",
-  "decisive_factors": ["CODE", ...]
+  "decisive_factors": ["CODE", ...],
+  "owner_resume_id": "<external_id одного из OWNER_CANDIDATES>",
+  "owner_reason": "кратко по-русски, почему это резюме — владелец"
 }
+
+Правила выбора owner_resume_id (жёстко):
+- owner_resume_id ОБЯЗАН быть одним из id в OWNER_CANDIDATES
+- Смотри title вакансии в первую очередь, затем описание
+- Delivery / Delivery Manager / TPM / SDM / менеджер изменений / поток поставки / Head of Delivery / Release / Launch Manager / Scrum facilitation / Agile-коуч → Technical Project Manager / Delivery Manager
+- Project Manager / проектный менеджер / менеджер проектов / директор проектов / руководитель IT-проектов / администратор проектов / портфель проектов / PMO / проектный офис → PM
+- Product Owner / Product Manager / менеджер продукта / владелец … продукта → PM (ближайший)
+- Bitrix/PHP/разработчик → PHP/Bitrix резюме
+- Даже при verdict=skip всё равно выбери лучший owner по смыслу роли
 
 Правила жёсткого SKIP (decisive_factors):
 - FIT.1c_engineering_required — руководство разработкой/внедрением 1С (не интеграция Bitrix↔1С)
@@ -60,7 +71,10 @@ PO/Product без delivery → maybe/skip по смыслу роли, не че�
 === POLICY SHORTLIST ===
 {{POLICY}}
 
-=== CANDIDATE / RESUME ===
+=== OWNER_CANDIDATES (активные резюме; выбери owner_resume_id из их id) ===
+{{OWNER_CANDIDATES}}
+
+=== CANDIDATE / RESUME (контекст текущего sync) ===
 {{RESUME}}
 
 === VACANCY ===

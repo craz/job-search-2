@@ -237,7 +237,8 @@ final class VacancyPageCollection
      *   is_duplicate: bool,
      *   owner_resume_id: string,
      *   owner_resume_title: string,
-     *   owner_reason: string
+     *   owner_reason: string,
+     *   owner_source: string
      * }
      */
     public function ownershipFor(
@@ -252,6 +253,7 @@ final class VacancyPageCollection
             'owner_resume_id' => '',
             'owner_resume_title' => '',
             'owner_reason' => '',
+            'owner_source' => '',
         ];
         if ($externalId === '') {
             return $empty;
@@ -275,13 +277,16 @@ final class VacancyPageCollection
         $ownerId = '';
         $ownerTitle = '';
         $reason = '';
+        $source = '';
         if (is_array($stored)) {
             $ownerId = trim((string) ($stored['resume_id'] ?? ''));
             $ownerTitle = trim((string) ($stored['resume_title'] ?? ''));
             $reason = trim((string) ($stored['reason'] ?? ''));
+            $source = trim((string) ($stored['source'] ?? ''));
         } elseif (is_array($peerMeta)) {
             $ownerId = trim((string) ($peerMeta['earliest_resume_id'] ?? ''));
             $reason = 'Первое появление в suitable.';
+            $source = 'first';
         }
 
         if ($ownerTitle === '' && $ownerId !== '') {
@@ -297,6 +302,7 @@ final class VacancyPageCollection
                 'owner_resume_id' => $ownerId !== '' ? $ownerId : $currentResumeId,
                 'owner_resume_title' => $ownerTitle,
                 'owner_reason' => $reason,
+                'owner_source' => $source,
             ];
         }
 
@@ -315,6 +321,7 @@ final class VacancyPageCollection
                 ? $ownerTitle
                 : trim((string) ($titlesByResume[$ownerId] ?? '')),
             'owner_reason' => $reason,
+            'owner_source' => $source,
         ];
     }
 

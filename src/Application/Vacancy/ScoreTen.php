@@ -9,18 +9,82 @@ use JobSearch\Domain\Scoring\ScoringApi;
 use JobSearch\Domain\Scoring\ScoringException;
 
 /**
- * Use case: поставить до 10 вакансий в DevAI semantic scoring.
+ * Use case: догон DevAI — неоценённые по всем suitable-run резюме + owner-stub'ы.
  */
 final class ScoreTen
 {
+    /** Догон только по свежему окну — иначе обход всех historical run слишком тяжёлый. */
+    private const CATCHUP_DAYS = 7;
+
     public function __construct(
         private readonly CoreApi $core,
         private readonly ScoringApi $scoring,
         private readonly SyncResumeContext $syncResume,
+        private readonly ?VacancyResumeOwnerStore $owners = null,
     ) {}
 
     /**
-     * До 10 неоценённых вакансий последнего suitable-run для резюме.
+     * Догон по всем резюме (кнопка «Оценить оставшиеся»).
+     *
+     * @param list<string> $resumeIds
+     *
+     * @return array{ok: bool, enqueued: int, message: string, vacancy_ids?: list<string>, by_resume?: array<string, int>}
+     */
+    public function forAllResumes(array $resumeIds, int $limitPerResume = 40): array
+    {
+        $total = 0;
+        $ids = [];
+        $byResume = [];
+        $ok = true;
+        $parts = [];
+        foreach ($resumeIds as $raw) {
+            $resumeId = trim((string) $raw);
+            if ($resumeId === '') {
+                continue;
+            }
+            $result = $this->forResume($resumeId, $limitPerResume);
+            $n = (int) ($result['enqueued'] ?? 0);
+            $byResume[$resumeId] = $n;
+            $total += $n;
+            foreach ($result['vacancy_ids'] ?? [] as $vid) {
+                $vid = trim((string) $vid);
+                if ($vid !== '') {
+                    $ids[] = $vid;
+                }
+            }
+            if (empty($result['ok'])) {
+                $ok = false;
+                $msg = trim((string) ($result['message'] ?? ''));
+                if ($msg !== '') {
+                    $parts[] = $msg;
+                }
+            }
+        }
+
+        if ($total > 0) {
+            return [
+                'ok' => true,
+                'enqueued' => $total,
+                'message' => 'Оценил оставшиеся через DevAI: ' . $total . ' '
+                    . self::vacancyWord($total) . '.',
+                'vacancy_ids' => array_values(array_unique($ids)),
+                'by_resume' => $byResume,
+            ];
+        }
+
+        return [
+            'ok' => $ok,
+            'enqueued' => 0,
+            'message' => $parts !== []
+                ? implode(' ', $parts)
+                : 'Неоценённых не осталось — догонять нечего.',
+            'vacancy_ids' => [],
+            'by_resume' => $byResume,
+        ];
+    }
+
+    /**
+     * До $limit неоценённых: все suitable-run резюме + owner (не только последний run).
      *
      * @return array{ok: bool, enqueued: int, message: string, vacancy_ids?: list<string>, raw?: array<string, mixed>}
      */
@@ -295,27 +359,33 @@ final class ScoreTen
     }
 
     /**
-     * До $limit vacancy id без Assessment (сканируем run по порядку).
+     * Неоценённые core UUID: все suitable-run этого резюме (свежие первые) + owner-привязки.
      *
      * @return list<string>
      */
     private function unscoredVacancyIdsForResume(string $resumeId, int $limit): array
     {
-        // Без полного summaryByResume (там N assessment-проверок по всем резюме).
-        $runId = $this->latestSuitableRunId($resumeId);
-        if ($runId === '') {
-            return [];
-        }
-
-        $items = $this->core->listSearchRunItems($runId);
-        $ids = [];
+        $limit = max(1, $limit);
+        /** @var array<string, true> $seen */
         $seen = [];
-        foreach ($items as $row) {
-            if (!is_array($row)) {
+        $ids = [];
+
+        foreach ($this->coreIdsFromAllSuitableRuns($resumeId) as $id) {
+            if (isset($seen[$id])) {
                 continue;
             }
-            $id = trim((string) ($row['vacancy_id'] ?? ''));
-            if ($id === '' || isset($seen[$id])) {
+            $seen[$id] = true;
+            if ($this->hasAssessment($id)) {
+                continue;
+            }
+            $ids[] = $id;
+            if (count($ids) >= $limit) {
+                return $ids;
+            }
+        }
+
+        foreach ($this->coreIdsOwnedByResume($resumeId) as $id) {
+            if (isset($seen[$id])) {
                 continue;
             }
             $seen[$id] = true;
@@ -331,24 +401,22 @@ final class ScoreTen
         return $ids;
     }
 
-    private function hasAssessment(string $vacancyId): bool
-    {
-        try {
-            $list = $this->core->listAssessments($vacancyId, 1);
-        } catch (CoreException) {
-            return false;
-        }
-
-        return $list['total'] > 0 || $list['items'] !== [];
-    }
-
-    private function latestSuitableRunId(string $resumeId): string
+    /**
+     * Core vacancy_id из suitable-run резюме за CATCHUP_DAYS (новые discovered первыми).
+     *
+     * @return list<string>
+     */
+    private function coreIdsFromAllSuitableRuns(string $resumeId): array
     {
         try {
             $runs = $this->core->listSearchRuns();
         } catch (CoreException) {
-            return '';
+            return [];
         }
+
+        $cutoff = $this->catchupCutoffIso();
+        /** @var array<string, string> $discoveredById */
+        $discoveredById = [];
         foreach ($runs as $run) {
             if (($run['acquisition_kind'] ?? '') !== 'resume_suitable') {
                 continue;
@@ -363,11 +431,111 @@ final class ScoreTen
             if (trim((string) ($ctx['hh_resume_external_id'] ?? '')) !== $resumeId) {
                 continue;
             }
-
-            return (string) ($run['id'] ?? '');
+            $runFinished = trim((string) ($run['finished_at'] ?? $run['started_at'] ?? ''));
+            if ($runFinished !== '' && $runFinished < $cutoff) {
+                continue;
+            }
+            $runId = trim((string) ($run['id'] ?? ''));
+            if ($runId === '') {
+                continue;
+            }
+            $runStarted = trim((string) ($run['started_at'] ?? ''));
+            try {
+                $items = $this->core->listSearchRunItems($runId);
+            } catch (CoreException) {
+                continue;
+            }
+            foreach ($items as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $id = trim((string) ($row['vacancy_id'] ?? ''));
+                if ($id === '') {
+                    continue;
+                }
+                $discovered = trim((string) ($row['discovered_at'] ?? ''));
+                if ($discovered === '') {
+                    $discovered = $runStarted;
+                }
+                if ($discovered !== '' && $discovered < $cutoff) {
+                    continue;
+                }
+                $prev = $discoveredById[$id] ?? null;
+                if ($prev === null || $discovered > $prev) {
+                    $discoveredById[$id] = $discovered;
+                }
+            }
         }
 
-        return '';
+        $ids = array_keys($discoveredById);
+        usort(
+            $ids,
+            static fn (string $a, string $b): int => ($discoveredById[$b] ?? '') <=> ($discoveredById[$a] ?? ''),
+        );
+
+        return $ids;
+    }
+
+    /**
+     * Owner за CATCHUP_DAYS → core UUID (скачаны peer'ом, привязаны сюда).
+     *
+     * @return list<string>
+     */
+    private function coreIdsOwnedByResume(string $resumeId): array
+    {
+        if ($this->owners === null) {
+            return [];
+        }
+        $cutoff = $this->catchupCutoffIso();
+        $externalIds = [];
+        foreach ($this->owners->all() as $ext => $row) {
+            if (trim((string) ($row['resume_id'] ?? '')) !== $resumeId) {
+                continue;
+            }
+            $decided = trim((string) ($row['decided_at'] ?? ''));
+            if ($decided !== '' && $decided < $cutoff) {
+                continue;
+            }
+            $ext = trim((string) $ext);
+            if ($ext !== '') {
+                $externalIds[] = $ext;
+            }
+        }
+        if ($externalIds === []) {
+            return [];
+        }
+
+        try {
+            $map = $this->core->lookupVacancyIdsByExternalIds($externalIds);
+        } catch (CoreException) {
+            return [];
+        }
+
+        $ids = [];
+        foreach ($externalIds as $ext) {
+            $id = trim((string) ($map[$ext] ?? ''));
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+
+        return $ids;
+    }
+
+    private function catchupCutoffIso(): string
+    {
+        return gmdate('c', time() - self::CATCHUP_DAYS * 86400);
+    }
+
+    private function hasAssessment(string $vacancyId): bool
+    {
+        try {
+            $list = $this->core->listAssessments($vacancyId, 1);
+        } catch (CoreException) {
+            return false;
+        }
+
+        return $list['total'] > 0 || $list['items'] !== [];
     }
 
     private static function vacancyWord(int $n): string

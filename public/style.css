@@ -108,6 +108,45 @@ a:hover {
   background: #ffffff14;
 }
 
+/* Плашка: UI-job уже бежит — не стартуй apply/vacancies поверх */
+.job-busy-banner {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  margin: 0;
+  padding: 0.7rem 1rem;
+  background: #5c3b00;
+  color: #ffe8b0;
+  border-bottom: 1px solid #c98a1a;
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.job-busy-banner-title {
+  display: inline;
+  font-weight: 700;
+}
+
+.job-busy-banner-detail {
+  display: inline;
+  opacity: 0.95;
+}
+
+body.is-job-busy a[href*="busy=apply"],
+body.is-job-busy a[href*="busy=apply_consider"],
+body.is-job-busy a[href*="busy=apply_errors"],
+body.is-job-busy a[href*="busy=vacancies"],
+body.is-job-busy a[href*="busy=refresh"],
+body.is-job-busy a[href*="busy=load"],
+body.is-job-busy a[href*="busy=chats"],
+body.is-job-busy a[href*="busy=leave_"],
+body.is-job-busy a[href*="busy=resume_views"],
+body.is-job-busy a[href*="busy=rehydrate"] {
+  opacity: 0.4;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
 .page-title {
   margin: 0;
   font-size: 1.15rem;

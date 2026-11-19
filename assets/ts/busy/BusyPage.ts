@@ -128,12 +128,7 @@ export class BusyPage {
 
   private async poll(): Promise<void> {
     if (Date.now() - this.startedAt > this.maxMs) {
-      const mins = Math.max(1, Math.round(this.maxMs / 60_000));
-      // Сами уходим: job мог ещё крутиться в фоне, UI не должен висеть с кнопкой.
-      this.goHome(
-        `Таймаут ${mins} мин на экране ожидания. Если отклик ещё идёт — обновите «Смотрим» позже.`,
-        false,
-      );
+      await this.onWaitTimeout();
       return;
     }
 
@@ -145,6 +140,47 @@ export class BusyPage {
         void this.poll();
       }, 1000);
     }
+  }
+
+  /**
+   * Экран ждал maxMs — уходим, но сначала смотрим job.status:
+   * иначе «если ещё идёт» пользователь проверить не может.
+   */
+  private async onWaitTimeout(): Promise<void> {
+    const mins = Math.max(1, Math.round(this.maxMs / 60_000));
+    let data: JobStatusResponse | null = null;
+    try {
+      data = await this.api.status();
+    } catch {
+      data = null;
+    }
+
+    const state = (data?.state ?? '').toLowerCase();
+    const jobMsg = (data?.message ?? '').trim();
+
+    if (state === 'running' || state === 'queued') {
+      const detail = jobMsg !== '' ? ` Сейчас: ${jobMsg}` : '';
+      this.goHome(
+        `Экран ждал ${mins} мин — отклик ещё идёт в фоне.${detail} Откройте «Смотрим» через пару минут.`,
+        false,
+      );
+      return;
+    }
+
+    if (state === 'done') {
+      this.goHome(
+        jobMsg !== ''
+          ? jobMsg
+          : `Экран ждал ${mins} мин — задание уже завершилось.`,
+        data?.ok !== false,
+      );
+      return;
+    }
+
+    this.goHome(
+      `Экран ждал ${mins} мин — по статусу job сейчас не running (скорее уже не идёт). Проверьте «Смотрим» и «Ошибки».`,
+      false,
+    );
   }
 
   private applyStatus(data: JobStatusResponse): void {

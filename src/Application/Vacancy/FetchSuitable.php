@@ -51,6 +51,7 @@ final class FetchSuitable
         private readonly int $maxAgeDays = self::DEFAULT_MAX_AGE_DAYS,
         private readonly ?SuitableRunStatsStore $runStats = null,
         private readonly ?BotWallRehydrateStore $rehydrate = null,
+        private readonly ?VacancyResumeOwnerStore $owners = null,
     ) {}
 
     /**
@@ -273,30 +274,55 @@ final class FetchSuitable
         $unchanged = 0;
         $seen = 0;
         $status = 'failed';
-        $maxPages = 12;
-        // Без inline-оценки — до targetConsider карточек; с оценкой — до maxIngest новых.
+        // Ingest: до 12 стр. После стопа по возрасту/cap — только ID (без detail), чтобы посчитать N/M.
+        $maxIngestPages = 12;
+        $maxCoveragePages = 40;
         $ingestCap = $scoreInline ? $maxIngest : $targetConsider;
+        $hhTotal = null;
+        $inDb = 0;
+        $idsOnly = false;
 
         try {
-            for ($serpPage = 0; $serpPage < $maxPages; $serpPage++) {
-                if ($ingested >= $ingestCap) {
+            for ($serpPage = 0; $serpPage < $maxCoveragePages; $serpPage++) {
+                if (!$idsOnly && ($ingested >= $ingestCap || $serpPage >= $maxIngestPages)) {
+                    $idsOnly = true;
+                }
+                if (
+                    $idsOnly
+                    && $hhTotal !== null
+                    && $serpCards >= $hhTotal
+                ) {
                     break;
                 }
 
-                $pageCards = $this->pages->readSuitableSerpPage($page, $resumeId, $serpPage);
+                $pageResult = $this->pages->readSuitableSerpPage($page, $resumeId, $serpPage);
+                $pageCards = $pageResult['items'];
+                if ($serpPage === 0 && $pageResult['total'] !== null) {
+                    $hhTotal = $pageResult['total'];
+                }
                 if ($pageCards === []) {
                     break;
                 }
 
-                $hitOlderThanWindow = false;
                 $consecutiveOld = 0;
                 foreach ($pageCards as $card) {
-                    if ($ingested >= $ingestCap) {
-                        break;
-                    }
                     $serpCards++;
                     $id = trim($card->externalId);
                     if ($id === '') {
+                        continue;
+                    }
+
+                    // В базе на *это* резюме (owner) — без двойного счёта PHP+PM+TPM.
+                    if (isset($this->hydratedKnown[$id]) && $this->ownedByResume($resumeId, $id)) {
+                        $inDb++;
+                    }
+
+                    if ($idsOnly) {
+                        continue;
+                    }
+
+                    if ($ingested >= $ingestCap) {
+                        $idsOnly = true;
                         continue;
                     }
                     if (isset($exclude[$id])) {
@@ -317,8 +343,8 @@ final class FetchSuitable
                             // Не рвём на первой (на relevance/сбоях HH иначе теряем свежие ниже).
                             $consecutiveOld++;
                             if ($consecutiveOld >= 3) {
-                                $hitOlderThanWindow = true;
-                                break;
+                                // Ingest стоп; остаток страницы и дальше — только покрытие N/M.
+                                $idsOnly = true;
                             }
                             continue;
                         }
@@ -359,6 +385,10 @@ final class FetchSuitable
                         }
                         $row = $this->itemRow($detail, $outcome, $coreId, null);
                         $ingested++;
+                        $this->hydratedKnown[$id] = true;
+                        if ($this->ownedByResume($resumeId, $id)) {
+                            $inDb++;
+                        }
 
                         if ($scoreInline && $coreId !== null && $coreId !== '') {
                             if ($onResumeProgress !== null) {
@@ -427,17 +457,14 @@ final class FetchSuitable
                     }
                 }
 
-                if ($hitOlderThanWindow) {
-                    break;
-                }
             }
 
             $status = $failed === 0 ? 'success' : ($ingested > 0 ? 'partial' : 'failed');
-            $this->core->finalizeSearchRun($runId, $status, $seen);
+            $this->core->finalizeSearchRun($runId, $status, $hhTotal ?? $seen);
         } catch (\Throwable $e) {
             $status = $ingested > 0 ? 'partial' : 'failed';
             try {
-                $this->core->finalizeSearchRun($runId, $status, $seen);
+                $this->core->finalizeSearchRun($runId, $status, $hhTotal ?? $seen);
             } catch (CoreException) {
             }
             $this->persistRunStats(
@@ -454,6 +481,8 @@ final class FetchSuitable
                 $unchanged,
                 $failed,
                 $scored,
+                $hhTotal,
+                $inDb,
             );
             throw $e;
         }
@@ -472,6 +501,8 @@ final class FetchSuitable
             $unchanged,
             $failed,
             $scored,
+            $hhTotal,
+            $inDb,
         );
 
         return [
@@ -479,6 +510,8 @@ final class FetchSuitable
             'search_run_id' => $runId,
             'requested' => $seen,
             'serp_cards' => $serpCards,
+            'hh_total' => $hhTotal,
+            'in_db' => $inDb,
             'skipped_known' => $skippedKnown,
             'skipped_old' => $skippedOld,
             'ingested' => $ingested,
@@ -508,6 +541,8 @@ final class FetchSuitable
         int $unchanged,
         int $failed,
         int $scored,
+        ?int $hhTotal = null,
+        int $inDb = 0,
     ): void {
         if ($this->runStats === null || $runId === '') {
             return;
@@ -520,6 +555,8 @@ final class FetchSuitable
             'finished_at' => gmdate('c'),
             'status' => $status,
             'serp_cards' => $serpCards,
+            'hh_total' => $hhTotal,
+            'in_db' => $inDb,
             'skipped_known' => $skippedKnown,
             'skipped_old' => $skippedOld,
             'ingested' => $ingested,
@@ -557,6 +594,20 @@ final class FetchSuitable
                 $this->hydratedKnown[$ext] = true;
             }
         }
+    }
+
+    /** Owner этого резюме (или ещё без owner — тогда считаем за текущее, один раз при ingest). */
+    private function ownedByResume(string $resumeId, string $externalId): bool
+    {
+        if ($this->owners === null) {
+            return true;
+        }
+        $row = $this->owners->get($externalId);
+        if ($row === null) {
+            return false;
+        }
+
+        return trim((string) ($row['resume_id'] ?? '')) === $resumeId;
     }
 
     private function notePeerAndAssign(string $resumeId, VacancyDetail $detail): void

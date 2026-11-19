@@ -20,6 +20,16 @@ final class VacancyScoreController
         return $this->scoreTen->forResume($resumeId, $limit);
     }
 
+    /**
+     * @param list<string> $resumeIds
+     *
+     * @return array{ok: bool, enqueued: int, message: string, vacancy_ids?: list<string>, by_resume?: array<string, int>}
+     */
+    public function forAllResumes(array $resumeIds, int $limitPerResume = 40): array
+    {
+        return $this->scoreTen->forAllResumes($resumeIds, $limitPerResume);
+    }
+
     /** @return array{ok: bool, enqueued: int, message: string, vacancy_ids?: list<string>, raw?: array<string, mixed>} */
     public function forVacancy(string $resumeId, string $vacancyId, bool $forceRescore = false): array
     {

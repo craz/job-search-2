@@ -5,7 +5,8 @@
 export class LiveReload {
   private version = '';
 
-  public boot(intervalMs = 1000): void {
+  /** 5 с: php -S однопоточный — поллинг раз в секунду клинит UI, пока главная ~8–12 с. */
+  public boot(intervalMs = 5000): void {
     window.setInterval(() => {
       void this.poll();
     }, intervalMs);
